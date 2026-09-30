@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf2journal"
+version = "0.1.0"
+description = "Converte páginas de PDF em Journals do Foundry VTT (HTML refluído)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = ["pymupdf>=1.24", "pillow>=10"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+pdf2journal = "pdf2journal.cli:main"
+
+[tool.setuptools]
+packages = ["pdf2journal"]
