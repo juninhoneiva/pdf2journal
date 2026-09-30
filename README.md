@@ -34,8 +34,9 @@ instalar Python.
 
 O app lembra a pasta de saída e as opções da última conversão.
 
-Para gerar uma versão publicada, crie uma tag `v*` (ex.: `v0.2.0`): o workflow
-compila o `.exe`, testa e anexa à release.
+Para publicar uma versão, crie uma release no GitHub (*Releases → Draft a new
+release*, com uma tag nova como `v0.2.0`): o workflow compila o `.exe`, testa e
+anexa à release.
 
 ## Instalação (linha de comando)
 
