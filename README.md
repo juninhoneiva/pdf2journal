@@ -17,13 +17,36 @@ texto refluído em HTML editável e tentando manter a estrutura da diagramação
 | Capitulares (letra grande no início) | Juntadas ao parágrafo |
 | Cabeçalhos, rodapés e números de página repetidos | Removidos |
 
-## Instalação
+## App para Windows
+
+Baixe o `pdf2journal.exe` na página de
+[Releases](https://github.com/juninhoneiva/pdf2journal/releases) (ou, para a
+versão mais recente em desenvolvimento, no artefato `pdf2journal-windows` da
+última execução do workflow **App Windows** na aba *Actions*). Não precisa
+instalar Python.
+
+1. **Abrir PDF…** (ou arraste o PDF sobre o `pdf2journal.exe`).
+2. Marque as páginas nas miniaturas: clique para marcar, Shift+clique para um
+   intervalo. Também dá para digitar no campo *Páginas* (`12-20,25`).
+3. Ajuste o nome, a divisão e a pasta de saída e clique em **Gerar Journal**.
+4. Use **Ver prévia** para conferir, **Abrir pasta** para pegar o `.json` e as
+   imagens, ou **Copiar macro** para colar direto numa macro do Foundry.
+
+O app lembra a pasta de saída e as opções da última conversão.
+
+Para publicar uma versão, crie uma release no GitHub (*Releases → Draft a new
+release*, com uma tag nova como `v0.2.0`): o workflow compila o `.exe`, testa e
+anexa à release.
+
+## Instalação (linha de comando)
 
 Requer Python 3.9 ou superior.
 
 ```bash
 pip install .
 ```
+
+Isso instala também o app de janela, que abre com `pdf2journal-gui`.
 
 ## Uso
 

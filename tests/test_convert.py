@@ -7,7 +7,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 from make_sample import build  # noqa: E402
 
-from pdf2journal.cli import main, parse_pages  # noqa: E402
+from pdf2journal.cli import main  # noqa: E402
+from pdf2journal.convert import format_pages, parse_pages  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -25,6 +26,8 @@ def test_parse_pages():
     assert parse_pages("1-2,5,7-", 8) == [0, 1, 4, 6, 7]
     with pytest.raises(ValueError):
         parse_pages("9", 3)
+    assert format_pages([0, 1, 2, 4, 6, 7]) == "1-3,5,7-8"
+    assert parse_pages(format_pages([3, 0, 1]), 5) == [0, 1, 3]
 
 
 def test_page_mode(sample, tmp_path):

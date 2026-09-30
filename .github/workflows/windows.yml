@@ -1,0 +1,54 @@
+name: App Windows
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install .[dev] pyinstaller
+
+      - name: Testes
+        run: pytest -q
+
+      - name: Gerar executável
+        run: >
+          pyinstaller --noconfirm --onefile --windowed
+          --name pdf2journal
+          --collect-all pymupdf
+          packaging/app.py
+
+      - name: Testar executável
+        shell: pwsh
+        run: |
+          $p = Start-Process dist/pdf2journal.exe -ArgumentList "--selftest" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "selftest falhou (código $($p.ExitCode))" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pdf2journal-windows
+          path: dist/pdf2journal.exe
+
+      - name: Publicar release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/pdf2journal.exe
