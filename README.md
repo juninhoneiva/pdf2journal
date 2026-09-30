@@ -12,10 +12,16 @@ texto refluído em HTML editável e tentando manter a estrutura da diagramação
 | Negrito, itálico, sobrescrito | `<strong>`, `<em>`, `<sup>` |
 | Listas com marcadores ou numeradas | `<ul>` / `<ol>` |
 | Quadros com fundo ou borda (boxes, notas do mestre) | `<blockquote>` |
-| Tabelas | `<table>` |
-| Ilustrações | Imagem WebP recortada da página |
+| Tabelas com grade | `<table>` |
+| Tabelas sem grade (colunas alinhadas, linhas sombreadas) | `<table>` reconstruída pelo alinhamento |
+| Fichas de criatura (`FOR 80 CON 65 …`, `STR DEX CON …`) | Tabela de características |
+| Linhas "Rótulo: valor" das fichas | Um parágrafo por linha |
+| Ilustrações | Imagem WebP recortada só na área visível (respeita máscaras e transparência) |
+| Texto que encosta na ilustração | Fica no Journal e é apagado de dentro da imagem |
+| Fundos, molduras e ornamentos repetidos | Ignorados |
 | Capitulares (letra grande no início) | Juntadas ao parágrafo |
-| Cabeçalhos, rodapés e números de página repetidos | Removidos |
+| Título do capítulo repetido em toda página, rodapés, números de página | Removidos |
+| Abas laterais com texto vertical | Removidas |
 
 ## App para Windows
 
@@ -28,11 +34,21 @@ instalar Python.
 1. **Abrir PDF…** (ou arraste o PDF sobre o `pdf2journal.exe`).
 2. Marque as páginas nas miniaturas: clique para marcar, Shift+clique para um
    intervalo. Também dá para digitar no campo *Páginas* (`12-20,25`).
-3. Ajuste o nome, a divisão e a pasta de saída e clique em **Gerar Journal**.
-4. Use **Ver prévia** para conferir, **Abrir pasta** para pegar o `.json` e as
-   imagens, ou **Copiar macro** para colar direto numa macro do Foundry.
+3. Em **Foundry**, confira a **Pasta Data** (detectada sozinha quando o
+   Foundry está instalado no lugar padrão) e escolha a **Pasta do mundo** na
+   lista (ou digite o nome da pasta, como aparece em `Data/worlds`).
+4. Ajuste o nome e a divisão e clique em **Gerar Journal**. Tudo é salvo em
+   `Data/worlds/<mundo>/pdf2journal/`: o `.json`, a macro, a prévia e a pasta
+   com as imagens, que já ficam no lugar certo para o Foundry.
+5. No Foundry, crie um Journal vazio → botão direito → **Importar Dados** →
+   escolha o `.json` (ou use **Copiar macro** e cole numa macro do tipo Script).
 
-O app lembra a pasta de saída e as opções da última conversão.
+Use **Ver prévia** para conferir antes de importar. O app lembra a pasta Data,
+o mundo e as opções da última conversão.
+
+Se o Foundry roda em outro computador ou num serviço de hospedagem, aponte a
+**Pasta Data** para uma pasta qualquer no seu computador e depois envie a pasta
+`worlds/<mundo>/pdf2journal` para o mesmo caminho no servidor.
 
 Para publicar uma versão, crie uma release no GitHub (*Releases → Draft a new
 release*, com uma tag nova como `v0.2.0`): o workflow compila o `.exe`, testa e
@@ -57,9 +73,14 @@ pdf2journal livro.pdf --pages 12-20 --name "Capítulo 2"
 # Uma página do Journal por título de nível 1 ou 2, juntando o texto entre páginas
 pdf2journal livro.pdf -p 12-40 -n "Cenário" --split heading --split-level 2
 
-# Tudo numa página só, com as imagens salvas dentro da pasta do mundo
-pdf2journal livro.pdf -p 5 -n "Handout" --split none --asset-prefix worlds/meumundo/handouts
+# Grava direto na pasta do mundo: Data/worlds/meu-mundo/pdf2journal/
+pdf2journal livro.pdf -p 5 -n "Handout" --world meu-mundo --data "C:/Users/eu/AppData/Local/FoundryVTT/Data"
 ```
+
+Com `--world` e `--data`, o `.json` e as imagens vão direto para
+`<Data>/worlds/<mundo>/pdf2journal/` e não é preciso copiar nada. Só com
+`--world`, os arquivos saem em `-o` e as imagens devem ser copiadas para
+`Data/worlds/<mundo>/pdf2journal/<nome>`.
 
 A saída vai para `./saida` (mude com `-o`):
 
@@ -89,7 +110,9 @@ saida/
 |---|---|
 | `-p, --pages` | Páginas do PDF, contadas a partir de 1: `1-5,8,10-` (padrão: todas) |
 | `-n, --name` | Nome do Journal (padrão: título do PDF ou nome do arquivo) |
-| `-o, --out` | Pasta de saída (padrão: `./saida`) |
+| `-w, --world` | Pasta do mundo (`Data/worlds/<mundo>`): imagens em `worlds/<mundo>/pdf2journal/<nome>` |
+| `--data` | Pasta Data do Foundry; com `--world`, grava tudo direto na pasta do mundo |
+| `-o, --out` | Pasta de saída quando não se usa `--data` (padrão: `./saida`) |
 | `--split page\|heading\|none` | Divisão em páginas do Journal (padrão: `page`) |
 | `--split-level 1-3` | Com `--split heading`: nível de título que abre página nova |
 | `--asset-prefix` | Caminho das imagens dentro da pasta Data do Foundry |
@@ -105,11 +128,14 @@ saida/
   `ocrmypdf livro.pdf livro-ocr.pdf`).
 - Ilustrações desenhadas em **vetor** (mapas, diagramas) não viram imagem;
   apenas as imagens bitmap são recortadas.
+- Tabelas sem grade são reconhecidas pelo alinhamento das colunas; tabelas
+  muito irregulares (células com várias linhas em colunas diferentes) podem
+  sair como parágrafos.
 - A detecção de títulos usa o tamanho da fonte. Em livros com muitos estilos
   parecidos, confira a prévia e ajuste com `--split-level`.
 - Texto sobre uma ilustração grande (mais de 300 caracteres) é mantido como
-  texto e a ilustração é descartada; textos curtos (legendas de mapa) ficam só
-  na imagem.
+  texto e a ilustração é descartada; textos curtos inteiramente dentro da
+  imagem (legendas de mapa) ficam só na imagem.
 
 ## Desenvolvimento
 

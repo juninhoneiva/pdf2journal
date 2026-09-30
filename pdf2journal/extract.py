@@ -6,11 +6,15 @@ módulo ``html`` transforma em HTML refluído para o Foundry.
 from __future__ import annotations
 
 import collections
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pymupdf
+
+from . import images as img
+from .tables import Table, find_text_tables, stat_table_from_text
 
 # Bits de ``span["flags"]`` no PyMuPDF.
 F_SUPERSCRIPT = 1
@@ -20,6 +24,8 @@ F_BOLD = 16
 BULLET_RE = re.compile(r"^\s*([•●▪■◦○▸►–—*·-])\s+")
 ORDERED_RE = re.compile(r"^\s*(\d{1,3}|[a-zA-Z])[.)]\s+")
 SENTENCE_END = (".", "!", "?", ":", "…", '"', "”", "»", ")")
+# "Rótulo: valor", típico de fichas ("Bônus de Dano: +1D4", "Corpo: 1").
+LABEL_RE = re.compile(r"^[A-ZÀ-Ý][\wÀ-ÿ%/()' -]{1,32}:\s*\S")
 
 
 # --------------------------------------------------------------------------- #
@@ -63,11 +69,6 @@ class Para:
     @property
     def text(self) -> str:
         return "".join(r.text for r in self.runs)
-
-
-@dataclass
-class Table:
-    rows: list[list[str]]
 
 
 @dataclass
@@ -226,7 +227,9 @@ class Extractor:
         self._dicts = {}
         self.body_size = 10.0
         self.levels: dict[float, int] = {}
-        self.furniture: set[str] = set()
+        # texto normalizado -> (altura típica, só na margem?, 1ª página em que aparece)
+        self.furniture: dict[str, tuple[float, bool, int]] = {}
+        self.repeated_images: set[str] = set()     # digests de imagens decorativas
         self.images_written: list[Path] = []
 
     # ---- análise global ------------------------------------------------- #
@@ -237,13 +240,18 @@ class Extractor:
         return self._dicts[pno]
 
     def analyze(self):
+        if self.opts.strip_headers:
+            self.furniture = self._find_furniture()
         chars = collections.Counter()
         lines_per_size = collections.Counter()
         for pno in self.pages:
+            rect = self.doc[pno].rect
             for b in self._text_dict(pno)["blocks"]:
                 if b.get("type") != 0:
                     continue
                 for ln in b["lines"]:
+                    if not _horizontal(ln) or self._is_furniture(ln, rect, pno):
+                        continue
                     sizes = collections.Counter()
                     for s in ln["spans"]:
                         n = len(s["text"].strip())
@@ -256,53 +264,114 @@ class Extractor:
         if chars:
             self.body_size = chars.most_common(1)[0][0]
         # Tamanhos de título: maiores que o corpo e com média >= 2 caracteres
-        # por linha (exclui capitulares).
+        # por linha (exclui capitulares). Cabeçalhos repetidos não contam.
         heading_sizes = sorted(
             (s for s in chars
              if s >= self.body_size * 1.15 and chars[s] / lines_per_size[s] >= 2),
             reverse=True,
         )
         self.levels = {s: min(i + 1, 4) for i, s in enumerate(heading_sizes)}
-        if self.opts.strip_headers:
-            self.furniture = self._find_furniture()
+        if self.opts.images:
+            self.repeated_images = self._find_repeated_images()
 
-    def _find_furniture(self):
-        """Cabeçalhos/rodapés repetidos (texto na margem em >= metade das páginas)."""
-        if len(self.pages) < 3:
-            return set()
+    def _find_furniture(self) -> dict[str, tuple[float, bool, int]]:
+        """Textos repetidos na mesma posição em várias páginas.
+
+        Pega o título do capítulo impresso no alto de toda página, rodapés,
+        nomes do livro etc. Na margem (alto, pé ou laterais) basta aparecer em
+        2 páginas e em 25% das selecionadas; no miolo da página precisa
+        aparecer em 3 páginas, em metade delas, sempre na mesma altura, e a
+        primeira ocorrência é mantida (costuma ser o título de verdade).
+        """
+        n = len(self.pages)
+        if n < 2:
+            return {}
+        occ: dict[str, dict[int, tuple[float, bool]]] = collections.defaultdict(dict)
+        for pno in self.pages:
+            rect = self.doc[pno].rect
+            for b in self._text_dict(pno)["blocks"]:
+                if b.get("type") != 0:
+                    continue
+                for ln in b["lines"]:
+                    if not _horizontal(ln):
+                        continue
+                    text = _line_text(ln)
+                    if not 2 <= len(text.strip()) <= 120:
+                        continue
+                    y = ((ln["bbox"][1] + ln["bbox"][3]) / 2 - rect.y0) / rect.height
+                    margin = _in_margin(ln["bbox"], rect)
+                    # Na margem os números variam (página); no miolo, texto exato.
+                    key = _furniture_key(text) if margin else "=" + _exact_key(text)
+                    occ[key].setdefault(pno, (y, margin))
+        out = {}
+        for key, per in occ.items():
+            c = len(per)
+            ys = sorted(y for y, _ in per.values())
+            margin = all(m for _, m in per.values())
+            first = min(per)
+            if margin and c >= max(2, math.ceil(0.25 * n)):
+                out[key] = (ys[len(ys) // 2], True, first)
+            elif c >= max(3, math.ceil(0.5 * n)) and ys[-1] - ys[0] <= 0.02:
+                out[key] = (ys[len(ys) // 2], False, first)
+        return out
+
+    def _find_repeated_images(self) -> set[str]:
+        """Imagens que se repetem em várias páginas (fundos, molduras, ornamentos)."""
+        n = len(self.pages)
         seen = collections.Counter()
         for pno in self.pages:
-            h = self.doc[pno].rect.height
-            keys = set()
-            for b in self._text_dict(pno)["blocks"]:
-                if b.get("type") == 0 and _in_margin(b["bbox"], h):
-                    keys.add(_furniture_key(_block_text(b)))
-            seen.update(keys)
-        limit = max(2, len(self.pages) // 2)
-        return {k for k, n in seen.items() if n >= limit and k}
+            try:
+                infos = self.doc[pno].get_image_info(hashes=True)
+            except Exception:  # noqa: BLE001
+                continue
+            seen.update({i["digest"] for i in infos if i.get("digest")})
+        return {d for d, c in seen.items() if c >= 3 or (c >= 2 and c >= 0.5 * n)}
+
+    def _is_furniture(self, ln, rect, pno) -> bool:
+        text = _line_text(ln).strip()
+        in_margin = _in_margin(ln["bbox"], rect)
+        if in_margin and _is_page_number(text):
+            return True
+        entry = self.furniture.get(_furniture_key(text)) if in_margin else None
+        if entry is None:
+            entry = self.furniture.get("=" + _exact_key(text))
+        if entry is None:
+            return False
+        y, margin_only, first = entry
+        if not margin_only and pno == first:
+            return False
+        yc = ((ln["bbox"][1] + ln["bbox"][3]) / 2 - rect.y0) / rect.height
+        return (margin_only and in_margin) or abs(yc - y) <= 0.03
+
+    def _clean_blocks(self, pno) -> list[dict]:
+        """Blocos de texto sem texto girado (abas laterais) e sem cabeçalhos repetidos."""
+        rect = self.doc[pno].rect
+        out = []
+        for b in self._text_dict(pno)["blocks"]:
+            if b.get("type") != 0:
+                continue
+            lines = []
+            for ln in b["lines"]:
+                if not _horizontal(ln) or not _line_text(ln).strip():
+                    continue
+                if self.opts.strip_headers and self._is_furniture(ln, rect, pno):
+                    continue
+                lines.append(ln)
+            if lines:
+                bbox = (min(l["bbox"][0] for l in lines), min(l["bbox"][1] for l in lines),
+                        max(l["bbox"][2] for l in lines), max(l["bbox"][3] for l in lines))
+                out.append({**b, "lines": lines, "bbox": bbox})
+        return out
 
     # ---- por página ------------------------------------------------------ #
     def page_blocks(self, pno: int) -> list:
         page = self.doc[pno]
         prect = tuple(page.rect)
         parea = _area(prect)
-        d = self._text_dict(pno)
-
-        text_items: list[_Item] = []
-        for b in d["blocks"]:
-            if b.get("type") != 0:
-                continue
-            txt = _block_text(b).strip()
-            if not txt:
-                continue
-            if _in_margin(b["bbox"], prect[3]):
-                if _furniture_key(txt) in self.furniture or _is_page_number(txt):
-                    continue
-            text_items.append(_Item(tuple(b["bbox"]), "text", b))
-
+        blocks = self._clean_blocks(pno)
         items: list[_Item] = []
 
-        # Tabelas
+        # Tabelas com grade desenhada
         table_rects = []
         if self.opts.tables:
             try:
@@ -313,13 +382,27 @@ class Extractor:
                 if t.row_count < 2 or t.col_count < 2:
                     continue
                 rows = [[_clean_cell(c) for c in row] for row in t.extract()]
-                if sum(1 for row in rows for c in row if c) < 3:
+                cells = [c for row in rows for c in row]
+                filled = [c for c in cells if c]
+                if len(filled) < 3 or len(filled) < 0.4 * len(cells):
+                    continue
+                if max(len(c) for c in filled) > 250:   # parágrafo capturado por engano
                     continue
                 r = tuple(t.bbox)
                 table_rects.append(r)
                 items.append(_Item(r, "table", Table(rows)))
-            text_items = [it for it in text_items
-                          if not any(_inside((it.cx, it.cy), r) for r in table_rects)]
+            blocks = [b for b in blocks
+                      if not any(_inside(_center(b["bbox"]), r) for r in table_rects)]
+
+            # Tabelas sem grade (alinhadas pelo texto) e fichas
+            found, used = find_text_tables(blocks, self.body_size, prect[2] - prect[0])
+            for bbox, tbl in found:
+                table_rects.append(bbox)
+                items.append(_Item(bbox, "table", tbl))
+            if used:
+                blocks = _drop_lines(blocks, used)
+
+        text_items = [_Item(tuple(b["bbox"]), "text", b) for b in blocks]
 
         # Imagens
         if self.opts.images:
@@ -327,7 +410,7 @@ class Extractor:
             items.extend(imgs)
 
         # Boxes (quadros com fundo ou borda)
-        boxes = self._boxes(page, parea, text_items, table_rects) if self.opts.boxes else []
+        boxes = self._boxes(page, parea, text_items + items, table_rects) if self.opts.boxes else []
         loose = list(text_items) + items
         for r in boxes:
             inner = [it for it in loose if _inside((it.cx, it.cy), r)]
@@ -339,37 +422,51 @@ class Extractor:
         return self._to_blocks(reading_order(loose))
 
     def _images(self, page, pno, prect, parea, text_items, table_rects):
+        try:
+            infos = page.get_image_info(hashes=True, xrefs=True)
+        except Exception:  # noqa: BLE001
+            return text_items, []
+        infos = [i for i in infos if i.get("digest") not in self.repeated_images]
+        if not infos:
+            return text_items, []
+        def text_inside(r):
+            # Texto inteiro dentro da imagem = legenda/rótulo que já sai na arte.
+            return [it for it in text_items if _overlap_area(it.bbox, r) >= 0.8 * _area(it.bbox)]
+
         rects = []
-        for info in page.get_image_info():
-            r = _clip(tuple(info["bbox"]), prect)
-            w, h = r[2] - r[0], r[3] - r[1]
-            if w < self.opts.min_image_pt or h < self.opts.min_image_pt:
+        for info, r in zip(infos, img.visible_rects(self.doc, pno, infos)):
+            if r is None:
                 continue
-            if _area(r) > 0.85 * parea:     # fundo de página
+            r = _clip(tuple(r), prect)
+            if r[2] - r[0] < self.opts.min_image_pt or r[3] - r[1] < self.opts.min_image_pt:
                 continue
             if any(_overlap_area(r, t) > 0.5 * _area(r) for t in table_rects):
                 continue
+            if _area(r) > 0.4 * parea and img.is_flat(self.doc, pno, info.get("xref"), r):
+                continue                    # textura de fundo (papel, pergaminho)
+            if sum(len(_block_text(it.payload)) for it in text_inside(r)) > 300:
+                continue                    # arte servindo de fundo para o texto
             rects.append(r)
+
         out = []
         for i, r in enumerate(sorted(_merge_rects(rects), key=lambda r: (r[1], r[0]))):
-            inside = [it for it in text_items if _inside((it.cx, it.cy), r)]
-            n_chars = sum(len(_block_text(it.payload)) for it in inside)
-            if n_chars > 300:
-                # Imagem servindo de fundo para texto: mantém o texto, ignora a arte.
+            inside = text_inside(r)
+            if sum(len(_block_text(it.payload)) for it in inside) > 300:
                 continue
-            # Textos curtos dentro da imagem (legendas de mapa etc.) já saem
-            # renderizados na própria imagem.
             text_items = [it for it in text_items if it not in inside]
+            # Texto do Journal que encosta na imagem é apagado do recorte.
+            erase = [tuple(ln["bbox"]) for it in text_items for ln in it.payload["lines"]
+                     if _overlap_area(tuple(ln["bbox"]), r) > 0]
             name = f"{self.asset_stem}-p{pno + 1:03d}-{i + 1:02d}.{self.opts.image_format}"
-            self._save_clip(page, r, name)
+            self._save_clip(pno, r, name, erase)
             out.append(_Item(r, "image", Image(name, r[2] - r[0])))
         return text_items, out
 
-    def _save_clip(self, page, rect, name):
+    def _save_clip(self, pno, rect, name, erase):
         if self.asset_dir is None:
             return
         self.asset_dir.mkdir(parents=True, exist_ok=True)
-        pix = page.get_pixmap(clip=pymupdf.Rect(rect), dpi=self.opts.dpi, alpha=False)
+        pix = img.render(self.doc, pno, rect, self.opts.dpi, erase)
         path = self.asset_dir / name
         fmt = self.opts.image_format
         if fmt == "webp":
@@ -426,10 +523,15 @@ class Extractor:
     def _line(self, ln) -> Line | None:
         runs, sizes = [], collections.Counter()
         all_bold = True
+        prev_x1 = None
         for s in ln["spans"]:
             t = s["text"].replace("\xad", "")
             if not t:
                 continue
+            if (runs and prev_x1 is not None and s["bbox"][0] - prev_x1 > 0.2 * s["size"]
+                    and not runs[-1].text.endswith(" ") and not t.startswith(" ")):
+                runs[-1].text += " "
+            prev_x1 = s["bbox"][2]
             font = s.get("font", "")
             bold = bool(s["flags"] & F_BOLD) or bool(re.search(r"bold|black|heavy|semibold", font, re.I))
             italic = bool(s["flags"] & F_ITALIC) or bool(re.search(r"italic|oblique", font, re.I))
@@ -450,17 +552,22 @@ class Extractor:
         lvl = self.levels.get(line.size)
         return f"h{lvl}" if lvl else "p"
 
-    def _paras(self, block) -> list[Para]:
-        lines = [l for l in (self._line(ln) for ln in block["lines"]) if l]
+    def _paras(self, block) -> list:
+        lines = [l for l in (self._line(ln) for ln in _same_row_merged(block["lines"])) if l]
         if not lines:
             return []
         bx0 = min(l.bbox[0] for l in lines)
         bx1 = max(l.bbox[2] for l in lines)
+        width = max(1.0, bx1 - bx0)
+        # Bloco de ficha: várias linhas "Rótulo: valor" -> uma linha por parágrafo.
+        labels = sum(1 for l in lines if LABEL_RE.match(l.text.strip()))
+        sheet = labels >= 2 and labels >= 0.4 * len(lines)
         paras: list[Para] = []
         prev: Line | None = None
         for line in lines:
             kind = self._classify(line)
             text = line.text
+            stripped = text.strip()
             marker = BULLET_RE.match(text) or ORDERED_RE.match(text)
             cur = paras[-1] if paras else None
             new = cur is None or _family(kind) != _family(cur.kind) or kind == "dropcap"
@@ -469,18 +576,24 @@ class Extractor:
                 gap = line.bbox[1] - prev.bbox[3]
                 indented = line.x0 > bx0 + max(6, 0.8 * size)
                 prev_text = prev.text.rstrip()
+                starts_upper = stripped[:1].isupper() or stripped[:1].isdigit()
                 if marker:
                     new = True
                 elif gap > 0.7 * size:
                     new = True
                 elif cur.kind == "li":
                     new = False                     # continuação do item
+                elif sheet:
+                    new = starts_upper and not prev_text.endswith(("-", ",", "("))
                 elif indented:
                     new = True
                 elif prev.all_bold and not line.all_bold and cur.lines == 1:
                     new = True                      # subtítulo em negrito
-                elif (prev_text.endswith(SENTENCE_END) and prev.bbox[2] < bx1 - 3 * size
-                      and text[:1].isupper()):
+                elif LABEL_RE.match(stripped) and LABEL_RE.match(prev.text.strip()):
+                    new = True                      # "Rótulo: valor" em sequência
+                elif starts_upper and (
+                        (prev_text.endswith(SENTENCE_END) and prev.bbox[2] < bx1 - 3 * size)
+                        or prev.bbox[2] < bx0 + 0.6 * width):
                     new = True                      # linha curta encerrando parágrafo
             if new:
                 if kind == "p" and marker:
@@ -494,15 +607,24 @@ class Extractor:
                 cur.lines += 1
             prev = line
 
+        out: list = []
         for p in paras:
             _trim(p.runs)
+            if not p.text.strip():
+                continue
+            if p.kind == "p":
+                stat = stat_table_from_text(p.text)
+                if stat:
+                    out.append(stat)
+                    continue
             if p.kind == "p" and p.lines == 1 and p.runs and all(r.bold for r in p.runs if r.text.strip()):
                 t = p.text.strip()
                 if len(t) < 70 and not t.endswith((".", ",", ";", ":")):
                     p.kind = "h4"
             if p.kind.startswith("h") and len(p.text) > 200:
                 p.kind = "p"
-        return [p for p in paras if p.text.strip()]
+            out.append(p)
+        return out
 
 
 # --------------------------------------------------------------------------- #
@@ -516,16 +638,68 @@ def _family(kind):
     return "p" if kind in ("p", "li") else kind
 
 
+def _line_text(ln):
+    return "".join(s["text"] for s in ln["spans"])
+
+
 def _block_text(b):
-    return " ".join("".join(s["text"] for s in ln["spans"]) for ln in b["lines"])
+    return " ".join(_line_text(ln) for ln in b["lines"])
 
 
-def _in_margin(bbox, height):
-    return bbox[3] < height * 0.08 or bbox[1] > height * 0.92
+def _horizontal(ln):
+    dx, dy = ln.get("dir", (1, 0))
+    return dx > 0.99 and abs(dy) < 0.05
+
+
+def _center(bbox):
+    return ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
+
+
+def _in_margin(bbox, rect):
+    """Faixa de 12% no alto e no pé da página, ou 10% nas laterais."""
+    x0, y0, x1, y1 = rect
+    w, h = x1 - x0, y1 - y0
+    return (bbox[3] < y0 + 0.12 * h or bbox[1] > y1 - 0.12 * h
+            or bbox[2] < x0 + 0.10 * w or bbox[0] > x1 - 0.10 * w)
+
+
+def _same_row_merged(lines):
+    """Junta linhas do PDF que estão na mesma altura (texto quebrado em pedaços)."""
+    out: list[dict] = []
+    for ln in lines:
+        if out:
+            last = out[-1]
+            h = max(1.0, last["bbox"][3] - last["bbox"][1])
+            same = abs((ln["bbox"][1] + ln["bbox"][3]) / 2 - (last["bbox"][1] + last["bbox"][3]) / 2) < 0.4 * h
+            if same and ln["bbox"][0] >= last["bbox"][2] - 1:
+                out[-1] = {**last, "spans": last["spans"] + ln["spans"],
+                           "bbox": (last["bbox"][0], min(last["bbox"][1], ln["bbox"][1]),
+                                    ln["bbox"][2], max(last["bbox"][3], ln["bbox"][3]))}
+                continue
+        out.append(ln)
+    return out
+
+
+def _drop_lines(blocks, used):
+    out = []
+    for bi, b in enumerate(blocks):
+        lines = [ln for li, ln in enumerate(b["lines"]) if (bi, li) not in used]
+        if not lines:
+            continue
+        if len(lines) != len(b["lines"]):
+            bbox = (min(l["bbox"][0] for l in lines), min(l["bbox"][1] for l in lines),
+                    max(l["bbox"][2] for l in lines), max(l["bbox"][3] for l in lines))
+            b = {**b, "lines": lines, "bbox": bbox}
+        out.append(b)
+    return out
 
 
 def _furniture_key(text):
     return re.sub(r"\d+", "#", re.sub(r"\s+", " ", text.strip().lower()))
+
+
+def _exact_key(text):
+    return re.sub(r"\s+", " ", text.strip().casefold())
 
 
 def _is_page_number(text):
