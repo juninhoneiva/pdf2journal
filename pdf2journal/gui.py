@@ -12,8 +12,8 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from . import __version__
-from .convert import (ConversionError, Settings, convert, default_name, format_pages,
-                      open_pdf, parse_pages)
+from .convert import (ConversionError, Settings, convert, default_data_dir, default_name,
+                      format_pages, list_worlds, open_pdf, parse_pages, slugify)
 from .extract import Options
 from .foundry import macro_script
 
@@ -57,8 +57,10 @@ class App(tk.Tk):
         self.v_count = tk.StringVar(value="")
         self.v_split = tk.StringVar(value=next(iter(SPLITS)))
         self.v_level = tk.IntVar(value=1)
-        self.v_out = tk.StringVar()
-        self.v_prefix = tk.StringVar()
+        found = default_data_dir()
+        self.v_data = tk.StringVar(value=str(found) if found else "")
+        self.v_world = tk.StringVar()
+        self.v_dest = tk.StringVar()
         self.v_images = tk.BooleanVar(value=True)
         self.v_tables = tk.BooleanVar(value=True)
         self.v_boxes = tk.BooleanVar(value=True)
@@ -135,17 +137,26 @@ class App(tk.Tk):
         self._row(jf, 4, "Nível do título", self.level, sticky="w")
         self._split_changed()
 
-        of = ttk.LabelFrame(right, text="Saída", padding=8)
+        of = ttk.LabelFrame(right, text="Foundry", padding=8)
         of.pack(fill="x", pady=8)
         of.columnconfigure(1, weight=1)
-        out = ttk.Frame(of)
-        out.columnconfigure(0, weight=1)
-        ttk.Entry(out, textvariable=self.v_out).grid(row=0, column=0, sticky="ew")
-        ttk.Button(out, text="…", width=3, command=self.choose_out).grid(row=0, column=1, padx=(4, 0))
-        self._row(of, 0, "Pasta", out)
-        self._row(of, 1, "Caminho no Foundry", ttk.Entry(of, textvariable=self.v_prefix))
-        ttk.Label(of, text="Pasta das imagens dentro de Data. Vazio = pdf2journal/<nome>",
-                  foreground="#777").grid(row=2, column=1, sticky="w")
+        data = ttk.Frame(of)
+        data.columnconfigure(0, weight=1)
+        data_entry = ttk.Entry(data, textvariable=self.v_data)
+        data_entry.grid(row=0, column=0, sticky="ew")
+        data_entry.bind("<FocusOut>", lambda e: self._refresh_worlds())
+        ttk.Button(data, text="…", width=3, command=self.choose_data).grid(row=0, column=1, padx=(4, 0))
+        self._row(of, 0, "Pasta Data", data)
+        self.world_box = ttk.Combobox(of, textvariable=self.v_world)
+        self._row(of, 1, "Pasta do mundo", self.world_box)
+        dest = ttk.Label(of, textvariable=self.v_dest, foreground="#777", wraplength=380,
+                         justify="left")
+        dest.grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        of.bind("<Configure>", lambda e: dest.configure(wraplength=max(200, e.width - 24)))
+        for v in (self.v_data, self.v_world, self.v_name):
+            v.trace_add("write", lambda *a: self._update_dest())
+        self._refresh_worlds()
+        self._update_dest()
 
         xf = ttk.LabelFrame(right, text="Conversão", padding=8)
         xf.pack(fill="x")
@@ -217,8 +228,7 @@ class App(tk.Tk):
         self.doc, self.pdf_path, self.password = doc, path, password
         self.v_path.set(f"{path}  ({doc.page_count} páginas)")
         self.v_name.set(default_name(doc, path) or path.stem)
-        if not self.v_out.get():
-            self.v_out.set(str(path.parent / "pdf2journal"))
+        self._update_dest()
         self.selected.clear()
         self.anchor = None
         self.result = None
@@ -345,19 +355,55 @@ class App(tk.Tk):
     # ------------------------------------------------------------------ #
     # Conversão
     # ------------------------------------------------------------------ #
-    def choose_out(self):
-        path = filedialog.askdirectory(title="Pasta de saída", initialdir=self.v_out.get() or None)
+    def choose_data(self):
+        path = filedialog.askdirectory(title="Pasta Data do Foundry (a que contém \"worlds\")",
+                                       initialdir=self.v_data.get() or None)
         if path:
-            self.v_out.set(path)
+            p = Path(path)
+            # Aceita também a pasta do próprio mundo ou a pasta "worlds".
+            if p.parent.name == "worlds":
+                self.v_world.set(p.name)
+                p = p.parent.parent
+            elif p.name == "worlds":
+                p = p.parent
+            self.v_data.set(str(p))
+            self._refresh_worlds()
+
+    def _refresh_worlds(self):
+        worlds = list_worlds(self.v_data.get().strip())
+        self.world_box.configure(values=worlds)
+        if len(worlds) == 1 and not self.v_world.get().strip():
+            self.v_world.set(worlds[0])
+
+    def _update_dest(self):
+        data, world = self.v_data.get().strip(), self.v_world.get().strip()
+        if not data:
+            self.v_dest.set("Escolha a pasta Data do Foundry (a que contém a pasta \"worlds\").")
+        elif not world:
+            self.v_dest.set("Escolha ou digite o nome da pasta do mundo.")
+        else:
+            name = slugify(self.v_name.get().strip() or (self.pdf_path.stem if self.pdf_path else "journal"))
+            dest = f"Data/worlds/{world}/pdf2journal/"
+            self.v_dest.set(f"Salva em {dest}{name}.json (imagens em {dest}{name}/)")
 
     def run(self):
         if not self.pdf_path:
             messagebox.showinfo("pdf2journal", "Abra um PDF primeiro.")
             return
         self._pages_typed()
-        if not self.v_out.get().strip():
-            messagebox.showinfo("pdf2journal", "Escolha a pasta de saída.")
+        data, world = self.v_data.get().strip(), self.v_world.get().strip()
+        if not data or not Path(data).is_dir():
+            messagebox.showinfo("pdf2journal", "Escolha a pasta Data do Foundry.")
             return
+        if not world:
+            messagebox.showinfo("pdf2journal", "Informe o nome da pasta do mundo.")
+            return
+        if not (Path(data) / "worlds" / world).is_dir():
+            if not messagebox.askyesno(
+                    "pdf2journal",
+                    f"O mundo \"{world}\" não existe em\n{Path(data) / 'worlds'}.\n\n"
+                    "Criar a pasta assim mesmo?"):
+                return
         try:
             dpi = int(self.v_dpi.get())
             level = int(self.v_level.get())
@@ -368,10 +414,10 @@ class App(tk.Tk):
             pdf=self.pdf_path,
             pages=sorted(self.selected) or None,
             name=self.v_name.get(),
-            out=Path(self.v_out.get()),
+            world=world,
+            data_dir=Path(data),
             split=SPLITS[self.v_split.get()],
             split_level=min(3, max(1, level)),
-            asset_prefix=self.v_prefix.get(),
             password=getattr(self, "password", None),
             options=Options(
                 images=self.v_images.get(),
@@ -425,12 +471,12 @@ class App(tk.Tk):
             f"Arquivo: {r.json_path.name}",
             f"Pasta:   {r.json_path.parent}",
             "",
-            "No Foundry:",
-            (f"1. Copie a pasta \"{r.asset_dir.name}\" para Data/{r.asset_prefix}"
-             if r.images else "1. (sem imagens para copiar)"),
-            "2. Aba Journal → crie um Journal vazio → botão direito →",
-            "   Importar Dados → escolha o .json",
-            "   ou: Copiar macro → nova macro do tipo Script → colar → executar.",
+            (f"As imagens já estão na pasta do mundo (Data/{r.asset_prefix})."
+             if r.images else "Nenhuma imagem extraída."),
+            "",
+            "No Foundry, aba Journal → crie um Journal vazio → botão direito →",
+            "Importar Dados → escolha o .json",
+            "ou: Copiar macro → nova macro do tipo Script → colar → executar.",
         ]
         self._say("\n".join(lines))
         self._save_config()
@@ -486,7 +532,7 @@ class App(tk.Tk):
 
     def _persisted(self):
         return {
-            "out": self.v_out, "prefix": self.v_prefix, "split": self.v_split,
+            "data": self.v_data, "world": self.v_world, "split": self.v_split,
             "level": self.v_level, "images": self.v_images, "tables": self.v_tables,
             "boxes": self.v_boxes, "headers": self.v_headers, "dpi": self.v_dpi,
             "format": self.v_format,
@@ -519,7 +565,11 @@ def selftest() -> int:
         page.insert_text((72, 72), "Titulo", fontsize=20)
         page.insert_text((72, 110), "Texto de teste.", fontsize=10)
         doc.save(pdf)
-        r = convert(Settings(pdf=pdf, out=Path(tmp) / "out"))
+        data = Path(tmp) / "Data"
+        (data / "worlds" / "teste").mkdir(parents=True)
+        r = convert(Settings(pdf=pdf, world="teste", data_dir=data))
+        if r.json_path.parent != data / "worlds" / "teste" / "pdf2journal":
+            return 1
         data = json.loads(r.json_path.read_text(encoding="utf-8"))
         ok = "Texto de teste." in data["pages"][0]["text"]["content"]
     return 0 if ok else 1

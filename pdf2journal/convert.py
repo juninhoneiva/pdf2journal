@@ -33,6 +33,11 @@ class Settings:
     asset_prefix: str | None = None
     password: str | None = None
     options: Options = field(default_factory=Options)
+    # Mundo do Foundry: com ``world`` as imagens são referenciadas em
+    # worlds/<mundo>/pdf2journal/; com ``data_dir`` também os arquivos são
+    # gravados direto em <Data>/worlds/<mundo>/pdf2journal/.
+    world: str | None = None
+    data_dir: Path | None = None
 
 
 @dataclass
@@ -45,6 +50,7 @@ class Result:
     preview_path: Path
     asset_dir: Path
     asset_prefix: str
+    in_foundry: bool = False           # arquivos gravados direto na pasta Data
 
     def summary(self) -> list[str]:
         lines = [
@@ -53,7 +59,9 @@ class Result:
             f"  Macro:                  {self.macro_path}",
             f"  Prévia no navegador:    {self.preview_path}",
         ]
-        if self.images:
+        if self.images and self.in_foundry:
+            lines.append(f"  Imagens: já estão em Data/{self.asset_prefix}")
+        elif self.images:
             lines.append(f"  Imagens: copie a pasta {self.asset_dir} para "
                          f"<Data do Foundry>/{self.asset_prefix}")
         return lines
@@ -100,6 +108,36 @@ def _fmt_run(run):
     return str(run[0] + 1) if len(run) == 1 else f"{run[0] + 1}-{run[-1] + 1}"
 
 
+def default_data_dir() -> Path | None:
+    """Pasta Data padrão do Foundry VTT, se existir nesta máquina."""
+    import os
+    candidates = []
+    if os.environ.get("LOCALAPPDATA"):
+        candidates.append(Path(os.environ["LOCALAPPDATA"]) / "FoundryVTT" / "Data")
+    home = Path.home()
+    candidates += [
+        home / "AppData" / "Local" / "FoundryVTT" / "Data",
+        home / "Library" / "Application Support" / "FoundryVTT" / "Data",
+        home / ".local" / "share" / "FoundryVTT" / "Data",
+    ]
+    return next((c for c in candidates if c.is_dir()), None)
+
+
+def list_worlds(data_dir: Path | str | None) -> list[str]:
+    """Pastas de mundo dentro de <Data>/worlds, em ordem alfabética."""
+    if not data_dir:
+        return []
+    worlds = Path(data_dir) / "worlds"
+    try:
+        return sorted((p.name for p in worlds.iterdir() if p.is_dir()), key=str.casefold)
+    except OSError:
+        return []
+
+
+def world_output_dir(data_dir: Path, world: str) -> Path:
+    return Path(data_dir) / "worlds" / world / "pdf2journal"
+
+
 def slugify(text: str) -> str:
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-") or "journal"
@@ -138,7 +176,15 @@ def convert(s: Settings, warn: Callable[[str], None] = lambda m: None) -> Result
 
     name = (s.name or "").strip() or default_name(doc, s.pdf) or Path(s.pdf).stem
     slug = slugify((s.name or "").strip() or Path(s.pdf).stem)
-    prefix = ((s.asset_prefix or "").strip() or f"pdf2journal/{slug}").strip("/")
+    world = (s.world or "").strip().strip("/\\")
+    if world and not re.fullmatch(r"[\w.-]+", world):
+        raise ConversionError(f"nome de pasta de mundo inválido: {world!r}")
+    default_prefix = f"worlds/{world}/pdf2journal/{slug}" if world else f"pdf2journal/{slug}"
+    prefix = ((s.asset_prefix or "").strip() or default_prefix).strip("/")
+    out = Path(s.out)
+    in_foundry = bool(world and s.data_dir)
+    if in_foundry:
+        out = world_output_dir(Path(s.data_dir), world)
 
     opts = s.options
     if opts.image_format == "webp":
@@ -148,7 +194,6 @@ def convert(s: Settings, warn: Callable[[str], None] = lambda m: None) -> Result
             warn("Pillow não instalado; usando JPG em vez de WebP")
             opts = Options(**{**opts.__dict__, "image_format": "jpg"})
 
-    out = Path(s.out)
     out.mkdir(parents=True, exist_ok=True)
     asset_dir = out / slug
 
@@ -169,7 +214,7 @@ def convert(s: Settings, warn: Callable[[str], None] = lambda m: None) -> Result
         encoding="utf-8",
     )
     return Result(name, len(jpages), len(ex.images_written), json_path, macro_path,
-                  preview_path, asset_dir, prefix)
+                  preview_path, asset_dir, prefix, in_foundry)
 
 
 def preview_html(name: str, pages: list[tuple[str, str]]) -> str:

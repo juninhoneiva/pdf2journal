@@ -65,3 +65,28 @@ def test_heading_split(sample, tmp_path):
     entry = run(sample, tmp_path, "--split", "heading", "--split-level", "2")
     names = [p["name"] for p in entry["pages"]]
     assert names == ["Capítulo Um", "A Biblioteca Orne", "Tabela de Encontros"]
+
+
+def test_world_folder(sample, tmp_path):
+    data = tmp_path / "Data"
+    (data / "worlds" / "arkham").mkdir(parents=True)
+    assert main([str(sample), "--world", "arkham", "--data", str(data)]) == 0
+    base = data / "worlds" / "arkham" / "pdf2journal"
+    entry = json.loads((base / "sample.json").read_text(encoding="utf-8"))
+    html = entry["pages"][1]["text"]["content"]
+    assert '<img src="worlds/arkham/pdf2journal/sample/sample-p002-01.webp"' in html
+    assert (base / "sample" / "sample-p002-01.webp").is_file()
+    assert (base / "sample.macro.js").is_file()
+
+
+def test_world_prefix_without_data(sample, tmp_path):
+    entry = run(sample, tmp_path, "--world", "arkham")
+    assert "worlds/arkham/pdf2journal/sample/" in entry["pages"][1]["text"]["content"]
+
+
+def test_list_worlds(tmp_path):
+    from pdf2journal.convert import list_worlds
+    for w in ("zeta", "Arkham", "beta"):
+        (tmp_path / "worlds" / w).mkdir(parents=True)
+    assert list_worlds(tmp_path) == ["Arkham", "beta", "zeta"]
+    assert list_worlds(tmp_path / "nada") == []

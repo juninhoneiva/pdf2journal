@@ -23,9 +23,16 @@ def build_parser() -> argparse.ArgumentParser:
                         "ou tudo numa página só (none). Padrão: page")
     p.add_argument("--split-level", type=int, default=1, choices=[1, 2, 3],
                    help="com --split heading: nível máximo de título que abre página nova (padrão: 1)")
+    p.add_argument("-w", "--world",
+                   help="pasta do mundo no Foundry (worlds/<mundo>): as imagens ficam em "
+                        "worlds/<mundo>/pdf2journal/<nome>")
+    p.add_argument("--data", type=Path,
+                   help="pasta Data do Foundry; com --world, grava tudo direto em "
+                        "<Data>/worlds/<mundo>/pdf2journal (ignora -o)")
     p.add_argument("--asset-prefix",
                    help="caminho das imagens dentro da pasta Data do Foundry "
-                        "(padrão: pdf2journal/<slug>)")
+                        "(padrão: worlds/<mundo>/pdf2journal/<nome> com --world, "
+                        "senão pdf2journal/<nome>)")
     p.add_argument("--dpi", type=int, default=150, help="resolução das imagens (padrão: 150)")
     p.add_argument("--image-format", choices=["webp", "jpg", "png"], default="webp")
     p.add_argument("--no-images", action="store_true", help="não extrair imagens")
@@ -47,6 +54,8 @@ def main(argv: list[str] | None = None) -> int:
         split=args.split,
         split_level=args.split_level,
         asset_prefix=args.asset_prefix,
+        world=args.world,
+        data_dir=args.data,
         password=args.password,
         options=Options(
             images=not args.no_images,
