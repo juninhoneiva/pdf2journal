@@ -12,10 +12,16 @@ texto refluído em HTML editável e tentando manter a estrutura da diagramação
 | Negrito, itálico, sobrescrito | `<strong>`, `<em>`, `<sup>` |
 | Listas com marcadores ou numeradas | `<ul>` / `<ol>` |
 | Quadros com fundo ou borda (boxes, notas do mestre) | `<blockquote>` |
-| Tabelas | `<table>` |
-| Ilustrações | Imagem WebP recortada da página |
+| Tabelas com grade | `<table>` |
+| Tabelas sem grade (colunas alinhadas, linhas sombreadas) | `<table>` reconstruída pelo alinhamento |
+| Fichas de criatura (`FOR 80 CON 65 …`, `STR DEX CON …`) | Tabela de características |
+| Linhas "Rótulo: valor" das fichas | Um parágrafo por linha |
+| Ilustrações | Imagem WebP recortada só na área visível (respeita máscaras e transparência) |
+| Texto que encosta na ilustração | Fica no Journal e é apagado de dentro da imagem |
+| Fundos, molduras e ornamentos repetidos | Ignorados |
 | Capitulares (letra grande no início) | Juntadas ao parágrafo |
-| Cabeçalhos, rodapés e números de página repetidos | Removidos |
+| Título do capítulo repetido em toda página, rodapés, números de página | Removidos |
+| Abas laterais com texto vertical | Removidas |
 
 ## App para Windows
 
@@ -105,11 +111,14 @@ saida/
   `ocrmypdf livro.pdf livro-ocr.pdf`).
 - Ilustrações desenhadas em **vetor** (mapas, diagramas) não viram imagem;
   apenas as imagens bitmap são recortadas.
+- Tabelas sem grade são reconhecidas pelo alinhamento das colunas; tabelas
+  muito irregulares (células com várias linhas em colunas diferentes) podem
+  sair como parágrafos.
 - A detecção de títulos usa o tamanho da fonte. Em livros com muitos estilos
   parecidos, confira a prévia e ajuste com `--split-level`.
 - Texto sobre uma ilustração grande (mais de 300 caracteres) é mantido como
-  texto e a ilustração é descartada; textos curtos (legendas de mapa) ficam só
-  na imagem.
+  texto e a ilustração é descartada; textos curtos inteiramente dentro da
+  imagem (legendas de mapa) ficam só na imagem.
 
 ## Desenvolvimento
 

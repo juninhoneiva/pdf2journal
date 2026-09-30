@@ -1,0 +1,141 @@
+"""Recorte de ilustrações pela área realmente visível na página.
+
+A caixa que o PDF informa para uma imagem é a da imagem inteira, mesmo quando
+ela está recortada por uma máscara (clipping) ou tem bordas transparentes. Para
+achar a área visível, a página é renderizada em baixa resolução com e sem as
+imagens candidatas, e a diferença entre as duas mostra onde elas aparecem de
+fato.
+"""
+from __future__ import annotations
+
+import math
+import re
+
+import pymupdf
+from PIL import Image as PILImage
+from PIL import ImageChops, ImageStat
+
+PROBE_DPI = 48
+
+
+def _pil(pix) -> PILImage.Image:
+    return PILImage.frombytes("RGB", (pix.width, pix.height), pix.samples)
+
+
+def _copy_page(doc, pno):
+    d = pymupdf.open()
+    d.insert_pdf(doc, from_page=pno, to_page=pno)
+    return d
+
+
+def _without_images(doc, pno, names: set[str]):
+    """Cópia da página sem os comandos que desenham as imagens indicadas.
+
+    Retorna a cópia e os nomes que de fato foram removidos.
+    """
+    d = _copy_page(doc, pno)
+    page = d[0]
+    targets: dict[int, set[str]] = {}
+    for item in page.get_images(full=True):
+        name, referencer = item[7], item[9]
+        if name in names:
+            targets.setdefault(referencer, set()).add(name)
+    removed: set[str] = set()
+    for ref, nms in targets.items():
+        xrefs = page.get_contents() if ref == 0 else [ref]
+        pattern = re.compile(rb"/(" + b"|".join(re.escape(n.encode()) for n in nms) + rb")\s+Do\b")
+        for x in xrefs:
+            stream = d.xref_stream(x)
+            if not stream:
+                continue
+            removed |= {m.group(1).decode() for m in pattern.finditer(stream)}
+            d.update_stream(x, pattern.sub(b"", stream))
+    return d, removed
+
+
+def visible_rects(doc, pno, infos) -> list[tuple | None]:
+    """Área visível de cada imagem (``None`` se não aparece).
+
+    ``infos`` vem de ``page.get_image_info(xrefs=True)``. Imagens embutidas
+    no conteúdo (xref 0) mantêm a caixa informada.
+    """
+    page = doc[pno]
+    names = {}
+    for item in page.get_images(full=True):
+        names.setdefault(item[0], item[7])
+    wanted = {names[i["xref"]] for i in infos if i.get("xref") in names}
+    if not wanted:
+        return [tuple(i["bbox"]) for i in infos]
+
+    z = PROBE_DPI / 72
+    try:
+        with_imgs = _pil(page.get_pixmap(dpi=PROBE_DPI, alpha=False))
+        stripped, removed = _without_images(doc, pno, wanted)
+        without = _pil(stripped[0].get_pixmap(dpi=PROBE_DPI, alpha=False))
+    except Exception:  # noqa: BLE001 - PDF estranho: usa a caixa informada
+        return [tuple(i["bbox"]) for i in infos]
+    if with_imgs.size != without.size:
+        return [tuple(i["bbox"]) for i in infos]
+    mask = ImageChops.difference(with_imgs, without).convert("L").point(lambda v: 255 if v > 10 else 0)
+
+    out = []
+    ox, oy = page.rect.x0, page.rect.y0
+    for info in infos:
+        r = info["bbox"]
+        if names.get(info.get("xref")) not in removed:
+            out.append(tuple(r))            # não deu para isolar: usa a caixa informada
+            continue
+        box = (max(0, int((r[0] - ox) * z)), max(0, int((r[1] - oy) * z)),
+               min(mask.width, math.ceil((r[2] - ox) * z)), min(mask.height, math.ceil((r[3] - oy) * z)))
+        if box[2] <= box[0] or box[3] <= box[1]:
+            out.append(None)
+            continue
+        bb = mask.crop(box).getbbox()
+        if not bb:
+            out.append(None)
+            continue
+        out.append((
+            max(r[0], ox + (box[0] + bb[0]) / z - 1),
+            max(r[1], oy + (box[1] + bb[1]) / z - 1),
+            min(r[2], ox + (box[0] + bb[2]) / z + 1),
+            min(r[3], oy + (box[1] + bb[3]) / z + 1),
+        ))
+    return out
+
+
+def is_flat(doc, pno, xref, rect) -> bool:
+    """Imagem quase uniforme (textura de fundo, papel), sem ilustração.
+
+    Olha os pixels da própria imagem; para imagens embutidas no conteúdo
+    (sem xref), olha a região renderizada da página.
+    """
+    try:
+        if xref:
+            pix = pymupdf.Pixmap(doc, xref)
+            while pix.width * pix.height > 250_000:
+                pix.shrink(1)
+            if pix.n - pix.alpha != 3:
+                pix = pymupdf.Pixmap(pymupdf.csRGB, pix)
+            if pix.alpha:
+                pix = pymupdf.Pixmap(pix, 0)
+        else:
+            pix = doc[pno].get_pixmap(clip=pymupdf.Rect(rect), dpi=24, alpha=False)
+    except Exception:  # noqa: BLE001
+        return False
+    if pix.width < 2 or pix.height < 2:
+        return True
+    return ImageStat.Stat(_pil(pix).convert("L")).stddev[0] < 8
+
+
+def render(doc, pno, rect, dpi, erase: list[tuple]):
+    """Renderiza o recorte, apagando antes o texto que já vai para o Journal."""
+    if not erase:
+        return doc[pno].get_pixmap(clip=pymupdf.Rect(rect), dpi=dpi, alpha=False)
+    d = _copy_page(doc, pno)
+    page = d[0]
+    for r in erase:
+        page.add_redact_annot(pymupdf.Rect(r[0], r[1] + 1, r[2], r[3] - 1), fill=False)
+    page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE,
+                          graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
+                          text=pymupdf.PDF_REDACT_TEXT_REMOVE)
+    return page.get_pixmap(clip=pymupdf.Rect(rect), dpi=dpi, alpha=False)

@@ -22,16 +22,27 @@ def tidy(blocks: list, across_pages: bool) -> list:
     out: list = []
     pending_drop = ""
     last_para_idx = None
+    last_heading = None          # (nível, texto) do último título emitido
+    page_start = False
     for b in blocks:
         if isinstance(b, Box):
             out.append(Box(tidy(b.children, across_pages=False)))
             last_para_idx = None
+            page_start = False
             continue
         if isinstance(b, PageBreak):
             out.append(b)
+            page_start = True
             if not across_pages:
                 last_para_idx = None
             continue
+        if isinstance(b, Para) and b.kind.startswith("h"):
+            key = (b.kind, _norm(b.text))
+            # Título do capítulo reimpresso no topo da página seguinte: descarta.
+            if page_start and key == last_heading:
+                continue
+            last_heading = key
+        page_start = False
         if not isinstance(b, Para):
             out.append(b)
             last_para_idx = None
@@ -51,6 +62,10 @@ def tidy(blocks: list, across_pages: bool) -> list:
         out.append(b)
         last_para_idx = len(out) - 1 if b.kind in ("p", "li") else None
     return out
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().casefold()
 
 
 def _continues(prev: Para, cur: Para) -> bool:
@@ -162,12 +177,18 @@ def runs_html(runs: list[Run], in_heading: bool = False) -> str:
 
 
 def _table(t: Table) -> str:
-    rows = [r for r in t.rows if any(c for c in r)]
+    rows = [(i, r) for i, r in enumerate(t.rows) if any(c for c in r)]
     if not rows:
         return ""
-    head = "".join(f"<th>{html.escape(c, quote=False)}</th>" for c in rows[0])
-    body = "".join(
-        "<tr>" + "".join(f"<td>{html.escape(c, quote=False)}</td>" for c in r) + "</tr>"
-        for r in rows[1:]
-    )
-    return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+    th_rows = getattr(t, "th_rows", frozenset({0}))
+
+    def tr(i, r):
+        tag = "th" if i in th_rows else "td"
+        return "<tr>" + "".join(f"<{tag}>{html.escape(c, quote=False)}</{tag}>" for c in r) + "</tr>"
+
+    head = ""
+    if rows[0][0] in th_rows and not any(i in th_rows for i, _ in rows[1:]):
+        head = f"<thead>{tr(*rows[0])}</thead>"
+        rows = rows[1:]
+    body = "".join(tr(i, r) for i, r in rows)
+    return f"<table>{head}<tbody>{body}</tbody></table>"
