@@ -11,7 +11,10 @@ texto refluído em HTML editável e tentando manter a estrutura da diagramação
 | Palavras hifenizadas no fim da linha | Palavra inteira |
 | Negrito, itálico, sobrescrito | `<strong>`, `<em>`, `<sup>` |
 | Listas com marcadores ou numeradas | `<ul>` / `<ol>` |
-| Quadros com fundo ou borda (boxes, notas do mestre) | `<blockquote>` |
+| Quadros com fundo, borda ou moldura (boxes, notas do mestre) | `<blockquote>` com todo o texto do quadro junto |
+| Boxes cujo fundo é uma imagem (pergaminho, papel envelhecido) | `<blockquote>`, sem a imagem de fundo |
+| Box que continua na página seguinte | Um box só (com `--split heading` ou `none`) |
+| Ornamentos (Dingbats, vinhetas, `* * *`), arabescos, cantoneiras | Ignorados |
 | Tabelas com grade | `<table>` |
 | Tabelas sem grade (colunas alinhadas, linhas sombreadas) | `<table>` reconstruída pelo alinhamento |
 | Fichas de criatura (`FOR 80 CON 65 …`, `STR DEX CON …`) | Tabela de características |
