@@ -60,7 +60,7 @@ def test_shaded_table_without_grid(result):
     entry, _ = result
     p2 = entry["pages"][1]["text"]["content"]
     assert "<thead><tr><th>1D6</th><th>Encontro</th><th>Perda de SAN</th></tr></thead>" in p2
-    assert "<tr><td>3-4</td><td>Bando de carniçais</td><td>1/1D8</td></tr>" in p2
+    assert "<tr><td>3-4</td><td>Bando de carniçais</td><td>@coc7.sanloss[sanMin:1,sanMax:1D8]{1/1D8}</td></tr>" in p2
 
 
 def test_stat_line_formats():
@@ -94,3 +94,52 @@ def test_single_page_ignores_flat_background(tmp_path):
     pdf = build(tmp_path / "rpg.pdf")
     assert main([str(pdf), "-p", "1", "-o", str(tmp_path / "out")]) == 0
     assert len(list((tmp_path / "out" / "rpg").iterdir())) == 2
+
+
+def test_coc7_rolls_and_links(result):
+    entry, _ = result
+    p2_id = entry["pages"][1]["_id"]
+    p2 = entry["pages"][1]["text"]["content"]
+    p3 = entry["pages"][2]["text"]["content"]
+    assert "@coc7.sanloss[sanMin:0,sanMax:1D6]{teste de Sanidade (0/1D6)}" in p3
+    assert "@coc7.check[subtype:skill,name:Encontrar,difficulty:+]{teste Difícil de Encontrar}" in p3
+    assert "@coc7.check[subtype:characteristic,name:str]{rolagem de FOR}" in p3
+    # título citado -> âncora do título na página 2; página impressa 42 -> página 2
+    assert f"@UUID[.{p2_id}#encontros-no-cemitério]{{Encontros no Cemitério}}" in p3
+    assert f"@UUID[.{p2_id}]{{página 42}}" in p3
+    # coluna "Perda de SAN" da tabela de encontros
+    assert "<td>@coc7.sanloss[sanMin:1,sanMax:1D8]{1/1D8}</td>" in p2
+    # na ficha: "Perda de Sanidade: 0/1D6"
+    assert "@coc7.sanloss[sanMin:0,sanMax:1D6]{Perda de Sanidade: 0/1D6}" in p2
+
+
+def test_no_rolls_no_links(tmp_path):
+    pdf = build(tmp_path / "rpg.pdf")
+    assert main([str(pdf), "-o", str(tmp_path / "out"), "--no-rolls", "--no-links"]) == 0
+    text = (tmp_path / "out" / "rpg.json").read_text(encoding="utf-8")
+    assert "@coc7" not in text and "@UUID" not in text
+
+
+def test_chapter_references():
+    from pdf2journal.htmlout import JournalPage
+    from pdf2journal.links import Linker
+    from pdf2journal.extract import Para, Run
+
+    pages = [JournalPage("Capítulo 3: Monstros", id="AAAAAAAAAAAAAAAA", pdf_pages=[10]),
+             JournalPage("Introdução", [Para("h2", [Run("Insanidade Temporária")])],
+                         id="BBBBBBBBBBBBBBBB", pdf_pages=[11])]
+    linker = Linker(pages, printed={9: 10})
+
+    def apply(text):
+        for a, b, rep in reversed(linker.find(text)):
+            text = text[:a] + rep + text[b:]
+        return text
+
+    assert apply("ver capítulo III.") == "ver @UUID[.AAAAAAAAAAAAAAAA]{capítulo III}."
+    assert apply("(Capítulo 3)") == "(@UUID[.AAAAAAAAAAAAAAAA]{Capítulo 3})"
+    assert apply("see Chapter three") == "see @UUID[.AAAAAAAAAAAAAAAA]{Chapter three}"
+    assert apply("veja Insanidade Temporária, página 9") == (
+        "veja @UUID[.BBBBBBBBBBBBBBBB#insanidade-temporária]{Insanidade Temporária}, "
+        "@UUID[.AAAAAAAAAAAAAAAA]{página 9}")
+    # capítulo que não foi convertido: fica como texto
+    assert apply("ver capítulo 7") == "ver capítulo 7"

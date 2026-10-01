@@ -65,6 +65,8 @@ class App(tk.Tk):
         self.v_tables = tk.BooleanVar(value=True)
         self.v_boxes = tk.BooleanVar(value=True)
         self.v_headers = tk.BooleanVar(value=True)
+        self.v_rolls = tk.BooleanVar(value=True)
+        self.v_links = tk.BooleanVar(value=True)
         self.v_dpi = tk.IntVar(value=150)
         self.v_format = tk.StringVar(value="webp")
         self._load_config()
@@ -165,8 +167,12 @@ class App(tk.Tk):
         ttk.Checkbutton(xf, text="Quadros como citação", variable=self.v_boxes).grid(row=1, column=0, sticky="w")
         ttk.Checkbutton(xf, text="Remover cabeçalho/rodapé", variable=self.v_headers).grid(
             row=1, column=1, sticky="w")
+        ttk.Checkbutton(xf, text="Atalhos de rolagem (CoC7)", variable=self.v_rolls).grid(
+            row=2, column=0, sticky="w")
+        ttk.Checkbutton(xf, text="Links para seções citadas", variable=self.v_links).grid(
+            row=2, column=1, sticky="w")
         img = ttk.Frame(xf)
-        img.grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        img.grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
         ttk.Label(img, text="Imagens:").pack(side="left")
         ttk.Combobox(img, textvariable=self.v_format, values=["webp", "jpg", "png"],
                      state="readonly", width=6).pack(side="left", padx=4)
@@ -426,6 +432,8 @@ class App(tk.Tk):
                 strip_headers=self.v_headers.get(),
                 dpi=min(600, max(36, dpi)),
                 image_format=self.v_format.get(),
+                rolls=self.v_rolls.get(),
+                links=self.v_links.get(),
             ),
         )
         self.go.configure(state="disabled")
@@ -535,6 +543,7 @@ class App(tk.Tk):
             "data": self.v_data, "world": self.v_world, "split": self.v_split,
             "level": self.v_level, "images": self.v_images, "tables": self.v_tables,
             "boxes": self.v_boxes, "headers": self.v_headers, "dpi": self.v_dpi,
+            "rolls": self.v_rolls, "links": self.v_links,
             "format": self.v_format,
         }
 

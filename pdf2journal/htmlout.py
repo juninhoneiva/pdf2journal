@@ -5,6 +5,7 @@ import html
 import re
 from dataclasses import dataclass, field
 
+from .coc7 import SAN_HEADER, san_cell
 from .extract import SENTENCE_END, Box, Image, PageBreak, Para, Run, Table
 
 
@@ -12,6 +13,8 @@ from .extract import SENTENCE_END, Box, Image, PageBreak, Para, Run, Table
 class JournalPage:
     title: str
     blocks: list = field(default_factory=list)
+    pdf_pages: list = field(default_factory=list)   # páginas do PDF (1-based) incluídas
+    id: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -82,7 +85,7 @@ def split_pages(stream: list, mode: str, split_level: int, name: str) -> list[Jo
         pages, cur = [], None
         for b in tidy(stream, across_pages=False):
             if isinstance(b, PageBreak):
-                cur = JournalPage(f"Página {b.number}")
+                cur = JournalPage(f"Página {b.number}", pdf_pages=[b.number])
                 pages.append(cur)
             elif cur is not None:
                 cur.blocks.append(b)
@@ -93,18 +96,22 @@ def split_pages(stream: list, mode: str, split_level: int, name: str) -> list[Jo
                 p.blocks.pop(0)
         return [p for p in pages if p.blocks or p.title]
 
-    blocks = [b for b in tidy(stream, across_pages=True) if not isinstance(b, PageBreak)]
+    blocks = tidy(stream, across_pages=True)
     if mode == "none":
-        return [JournalPage(name, blocks)]
+        return [JournalPage(name, [b for b in blocks if not isinstance(b, PageBreak)],
+                            [b.number for b in blocks if isinstance(b, PageBreak)])]
 
     # mode == "heading"
     pages: list[JournalPage] = []
     cur = JournalPage(name)
     for b in blocks:
+        if isinstance(b, PageBreak):
+            cur.pdf_pages.append(b.number)
+            continue
         if isinstance(b, Para) and b.kind.startswith("h") and int(b.kind[1]) <= split_level:
             if cur.blocks or cur.title != name:
                 pages.append(cur)
-            cur = JournalPage(_plain(b))
+            cur = JournalPage(_plain(b), pdf_pages=cur.pdf_pages[-1:])
             continue
         cur.blocks.append(b)
     if cur.blocks or cur.title != name or not pages:
@@ -119,9 +126,15 @@ def _plain(p: Para) -> str:
 # --------------------------------------------------------------------------- #
 # HTML
 # --------------------------------------------------------------------------- #
-def render(blocks: list, img_src) -> str:
-    """``img_src(file) -> str`` resolve o caminho de cada imagem."""
+def render(blocks: list, img_src, annotate=None) -> str:
+    """``img_src(file) -> str`` resolve o caminho de cada imagem.
+
+    ``annotate(texto) -> [(início, fim, substituição)]``, se dado, troca
+    trechos do texto (atalhos de rolagem, links) em parágrafos, itens de
+    lista e células de tabela.
+    """
     parts: list[str] = []
+    ann = annotate or (lambda t: [])
     i = 0
     while i < len(blocks):
         b = blocks[i]
@@ -130,20 +143,21 @@ def render(blocks: list, img_src) -> str:
             items = []
             while (i < len(blocks) and isinstance(blocks[i], Para)
                    and blocks[i].kind == "li" and blocks[i].ordered == b.ordered):
-                items.append(f"<li>{runs_html(blocks[i].runs)}</li>")
+                items.append(f"<li>{runs_html(_annotate_runs(blocks[i].runs, ann))}</li>")
                 i += 1
             parts.append(f"<{tag}>{''.join(items)}</{tag}>")
             continue
         if isinstance(b, Para):
             tag = b.kind if b.kind.startswith("h") else "p"
-            parts.append(f"<{tag}>{runs_html(b.runs, in_heading=tag != 'p')}</{tag}>")
+            runs = b.runs if tag != "p" else _annotate_runs(b.runs, ann)
+            parts.append(f"<{tag}>{runs_html(runs, in_heading=tag != 'p')}</{tag}>")
         elif isinstance(b, Table):
-            parts.append(_table(b))
+            parts.append(_table(b, ann))
         elif isinstance(b, Image):
             w = round(b.width_pt * 96 / 72)
             parts.append(f'<p><img src="{html.escape(img_src(b.file))}" width="{w}"></p>')
         elif isinstance(b, Box):
-            parts.append(f"<blockquote>{render(b.children, img_src)}</blockquote>")
+            parts.append(f"<blockquote>{render(b.children, img_src, annotate)}</blockquote>")
         i += 1
     return "\n".join(parts)
 
@@ -176,15 +190,61 @@ def runs_html(runs: list[Run], in_heading: bool = False) -> str:
     return re.sub(r"\s+", " ", "".join(out)).strip()
 
 
-def _table(t: Table) -> str:
+def _apply(text: str, spans) -> str:
+    for a, b, rep in sorted(spans, reverse=True):
+        text = text[:a] + rep + text[b:]
+    return text
+
+
+def _annotate_runs(runs: list[Run], ann) -> list[Run]:
+    """Aplica as substituições no texto corrido, mesmo que cruzem formatações."""
+    text = "".join(r.text for r in runs)
+    spans = ann(text)
+    if not spans:
+        return runs
+    out: list[Run] = []
+    pos = 0
+    bounds = []                                    # (início, fim, run)
+    for r in runs:
+        bounds.append((pos, pos + len(r.text), r))
+        pos += len(r.text)
+    cut = 0
+    for a, b, rep in sorted(spans):
+        for s, e, r in bounds:                     # texto antes do trecho
+            lo, hi = max(s, cut), min(e, a)
+            if lo < hi:
+                out.append(Run(text[lo:hi], r.bold, r.italic, r.sup))
+        first = next((r for s, e, r in bounds if s <= a < e), runs[0])
+        out.append(Run(rep, first.bold, first.italic, first.sup))
+        cut = b
+    for s, e, r in bounds:
+        lo = max(s, cut)
+        if lo < e:
+            out.append(Run(text[lo:e], r.bold, r.italic, r.sup))
+    return out
+
+
+def _table(t: Table, ann=lambda t: []) -> str:
     rows = [(i, r) for i, r in enumerate(t.rows) if any(c for c in r)]
     if not rows:
         return ""
     th_rows = getattr(t, "th_rows", frozenset({0}))
 
+    # Colunas cujo cabeçalho fala de Sanidade: "0/1D6" vira atalho de perda.
+    san_cols = set()
+    if getattr(ann, "rolls", False) and rows[0][0] in th_rows:
+        san_cols = {k for k, c in enumerate(rows[0][1]) if SAN_HEADER.search(c)}
+
+    def cell(c, tag, k):
+        if tag == "th":
+            return html.escape(c, quote=False)
+        if k in san_cols and san_cell(c):
+            return html.escape(san_cell(c), quote=False)
+        return html.escape(_apply(c, ann(c)), quote=False)
+
     def tr(i, r):
         tag = "th" if i in th_rows else "td"
-        return "<tr>" + "".join(f"<{tag}>{html.escape(c, quote=False)}</{tag}>" for c in r) + "</tr>"
+        return "<tr>" + "".join(f"<{tag}>{cell(c, tag, k)}</{tag}>" for k, c in enumerate(r)) + "</tr>"
 
     head = ""
     if rows[0][0] in th_rows and not any(i in th_rows for i, _ in rows[1:]):

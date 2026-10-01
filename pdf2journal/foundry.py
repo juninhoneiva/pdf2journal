@@ -14,8 +14,9 @@ def random_id() -> str:
     return "".join(secrets.choice(_ALPHABET) for _ in range(16))
 
 
-def journal_entry(name: str, pages: list[tuple[str, str]], source: str) -> dict:
-    """``pages`` é uma lista de (título, html)."""
+def journal_entry(name: str, pages: list[tuple], source: str) -> dict:
+    """``pages`` é uma lista de (título, html) ou (id, título, html)."""
+    pages = [p if len(p) == 3 else (random_id(), *p) for p in pages]
     now = int(time.time() * 1000)
     stats = {"coreVersion": CORE_VERSION, "createdTime": now, "modifiedTime": now}
     return {
@@ -23,7 +24,7 @@ def journal_entry(name: str, pages: list[tuple[str, str]], source: str) -> dict:
         "name": name,
         "pages": [
             {
-                "_id": random_id(),
+                "_id": pid,
                 "name": title,
                 "type": "text",
                 "title": {"show": True, "level": 1},
@@ -33,7 +34,7 @@ def journal_entry(name: str, pages: list[tuple[str, str]], source: str) -> dict:
                 "flags": {},
                 "_stats": dict(stats),
             }
-            for i, (title, content) in enumerate(pages)
+            for i, (pid, title, content) in enumerate(pages)
         ],
         "folder": None,
         "sort": 0,
