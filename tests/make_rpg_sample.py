@@ -132,7 +132,13 @@ def build(path: Path):
 
     # ---------------- página 3 ---------------------------------------------- #
     p = page_frame(doc, 3, bg)
-    lines(p, L, 90, ["Os carniçais evitam a luz e fogem de chamas."])
+    lines(p, L, 90, [
+        "Os carniçais evitam a luz e fogem de chamas.",
+        "Ao ver um carniçal, peça um teste de Sanidade (0/1D6).",
+        "Um teste Difícil de Encontrar revela as pegadas.",
+        "Para os encontros, veja Encontros no Cemitério (página 42).",
+        "Uma rolagem de FOR abre a cripta.",
+    ])
 
     doc.set_metadata({"title": "Bestiário de Teste"})
     doc.save(path)

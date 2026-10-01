@@ -38,6 +38,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-images", action="store_true", help="não extrair imagens")
     p.add_argument("--no-tables", action="store_true", help="não detectar tabelas")
     p.add_argument("--no-boxes", action="store_true", help="não converter quadros em citações")
+    p.add_argument("--no-rolls", action="store_true",
+                   help="não criar atalhos de rolagem do CoC7 (@coc7.check / @coc7.sanloss)")
+    p.add_argument("--no-links", action="store_true",
+                   help="não criar links para seções citadas (\"ver capítulo 3\")")
     p.add_argument("--keep-headers", action="store_true",
                    help="manter cabeçalhos/rodapés repetidos e números de página")
     p.add_argument("--password", help="senha do PDF, se houver")
@@ -64,6 +68,8 @@ def main(argv: list[str] | None = None) -> int:
             strip_headers=not args.keep_headers,
             dpi=args.dpi,
             image_format=args.image_format,
+            rolls=not args.no_rolls,
+            links=not args.no_links,
         ),
     )
     try:

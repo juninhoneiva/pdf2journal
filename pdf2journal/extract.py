@@ -117,6 +117,8 @@ class Options:
     dpi: int = 150
     image_format: str = "webp"    # webp | jpg | png
     min_image_pt: float = 48.0
+    rolls: bool = True            # atalhos de rolagem do CoC7
+    links: bool = True            # links para seções citadas ("ver capítulo 3")
 
 
 # --------------------------------------------------------------------------- #
@@ -230,6 +232,7 @@ class Extractor:
         # texto normalizado -> (altura típica, só na margem?, 1ª página em que aparece)
         self.furniture: dict[str, tuple[float, bool, int]] = {}
         self.repeated_images: set[str] = set()     # digests de imagens decorativas
+        self.printed: dict[int, int] = {}          # número impresso -> página do PDF (1-based)
         self.images_written: list[Path] = []
 
     # ---- análise global ------------------------------------------------- #
@@ -331,6 +334,8 @@ class Extractor:
         text = _line_text(ln).strip()
         in_margin = _in_margin(ln["bbox"], rect)
         if in_margin and _is_page_number(text):
+            if text.strip().isdigit():
+                self.printed.setdefault(int(text.strip()), pno + 1)
             return True
         entry = self.furniture.get(_furniture_key(text)) if in_margin else None
         if entry is None:

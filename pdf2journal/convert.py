@@ -12,7 +12,9 @@ from typing import Callable
 import pymupdf
 
 from .extract import Options, extract
-from .foundry import journal_entry, macro_script
+from .coc7 import find_rolls
+from .foundry import journal_entry, macro_script, random_id
+from .links import Linker
 from .htmlout import render, split_pages
 
 GENERIC_TITLES = ("untitled", "sem título", "document", "documento")
@@ -199,9 +201,12 @@ def convert(s: Settings, warn: Callable[[str], None] = lambda m: None) -> Result
 
     stream, ex = extract(doc, pages, opts, asset_dir, slug)
     jpages = split_pages(stream, s.split, s.split_level, name)
+    for p in jpages:
+        p.id = random_id()
+    annotate = _annotator(opts, jpages, ex.printed)
 
     entry = journal_entry(
-        name, [(p.title, render(p.blocks, lambda f: f"{prefix}/{f}")) for p in jpages],
+        name, [(p.id, p.title, render(p.blocks, lambda f: f"{prefix}/{f}", annotate)) for p in jpages],
         source=Path(s.pdf).name,
     )
     json_path = out / f"{slug}.json"
@@ -210,11 +215,36 @@ def convert(s: Settings, warn: Callable[[str], None] = lambda m: None) -> Result
     macro_path.write_text(macro_script(entry), encoding="utf-8")
     preview_path = out / f"{slug}.preview.html"
     preview_path.write_text(
-        preview_html(name, [(p.title, render(p.blocks, lambda f: f"{slug}/{f}")) for p in jpages]),
+        preview_html(name, [(p.title, _preview_links(render(p.blocks, lambda f: f"{slug}/{f}", annotate)))
+                            for p in jpages]),
         encoding="utf-8",
     )
     return Result(name, len(jpages), len(ex.images_written), json_path, macro_path,
                   preview_path, asset_dir, prefix, in_foundry)
+
+
+def _annotator(opts: Options, jpages, printed):
+    """Função que acha atalhos de rolagem e links num trecho de texto."""
+    linker = Linker(jpages, printed) if opts.links else None
+    if not opts.rolls and linker is None:
+        return None
+
+    def annotate(text: str):
+        spans = find_rolls(text) if opts.rolls else []
+        if linker:
+            spans += [sp for sp in linker.find(text)
+                      if all(sp[1] <= a or sp[0] >= b for a, b, _ in spans)]
+        return sorted(spans)
+    annotate.rolls = opts.rolls
+    return annotate
+
+
+def _preview_links(content: str) -> str:
+    """Mostra na prévia como os atalhos aparecem no Foundry."""
+    content = re.sub(r"@coc7\.(\w+)\[([^\]]*)\]\{([^}]*)\}",
+                     lambda m: f'<span class="roll" title="@coc7.{m[1]}[{m[2]}]">🎲 {m[3]}</span>', content)
+    return re.sub(r"@UUID\[([^\]]*)\]\{([^}]*)\}",
+                  lambda m: f'<span class="link" title="@UUID[{m[1]}]">📄 {m[2]}</span>', content)
 
 
 def preview_html(name: str, pages: list[tuple[str, str]]) -> str:
@@ -235,6 +265,9 @@ blockquote{{margin:1em 0;padding:.5em 1em;background:#e6dfcd;border-left:4px sol
 table{{border-collapse:collapse;width:100%}}
 th,td{{border:1px solid #b5ab94;padding:3px 6px;text-align:left}}
 th{{background:#d8cfb8}}
+.roll,.link{{padding:0 4px;border-radius:3px;white-space:nowrap}}
+.roll{{background:#e9d9b0;border:1px solid #b58f3a}}
+.link{{background:#dde4ee;border:1px solid #6a85a8}}
 </style></head><body>
 {body}
 </body></html>

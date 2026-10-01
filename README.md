@@ -22,6 +22,40 @@ texto refluído em HTML editável e tentando manter a estrutura da diagramação
 | Capitulares (letra grande no início) | Juntadas ao parágrafo |
 | Título do capítulo repetido em toda página, rodapés, números de página | Removidos |
 | Abas laterais com texto vertical | Removidas |
+| "teste Difícil de Encontrar", "rolagem de FOR", "Luck roll" | Atalho de rolagem do CoC7 (`@coc7.check`) |
+| "teste de Sanidade (0/1D6)", "Perda de Sanidade: 1/1D8", coluna "Perda de SAN" | Atalho de perda de Sanidade (`@coc7.sanloss`) |
+| "ver capítulo 3", "veja Insanidade", "(página 45)" | Link para o título ou a página do Journal (`@UUID`) |
+
+### Atalhos de rolagem do CoC7
+
+Menções a testes no texto viram botões do sistema
+[Call of Cthulhu 7e](https://github.com/Miskatonic-Investigative-Society/CoC7-FoundryVTT):
+
+- **Perícias:** `teste de Escutar`, `teste Difícil de Encontrar`, `teste de Ciência (Biologia)`,
+  `Hard Spot Hidden roll` → `@coc7.check[subtype:skill,name:Encontrar,difficulty:+]`.
+  O nome da perícia é o que está no livro; o CoC7 procura a perícia com esse
+  nome na ficha do investigador.
+- **Características e atributos:** `teste de FOR`, `rolagem de Sorte (Extremo)`,
+  `Luck roll`.
+- **Dificuldade e dados extras:** Regular/Difícil/Extremo e "com um dado de
+  bônus/penalidade".
+- **Perda de Sanidade:** `teste de Sanidade (0/1D6)`, `Perda de Sanidade: 1/1D8`,
+  `1D3/1D10 de Sanidade`, e as células de colunas "Perda de SAN" em tabelas
+  → `@coc7.sanloss[sanMin:0,sanMax:1D6]`.
+
+Desligue com `--no-rolls` ou desmarcando **Atalhos de rolagem (CoC7)** no app.
+
+### Links para seções citadas
+
+Referências como "ver capítulo 3", "(Capítulo III)", "veja Insanidade
+Temporária", "see Chapter three" e "(página 45)" viram links do Foundry para o
+título ou a página do Journal correspondente. Só vira link o que estiver dentro
+das páginas convertidas; o resto fica como texto. Para "página 45" o app usa o
+número impresso no rodapé do livro, não o número da página do PDF.
+
+Os links são relativos (`@UUID[.<id da página>#<âncora>]`), então continuam
+funcionando ao importar o `.json` num Journal existente. Desligue com
+`--no-links` ou desmarcando **Links para seções citadas**.
 
 ## App para Windows
 
@@ -119,6 +153,8 @@ saida/
 | `--dpi` | Resolução das imagens (padrão: 150) |
 | `--image-format webp\|jpg\|png` | Formato das imagens (padrão: webp) |
 | `--no-images`, `--no-tables`, `--no-boxes` | Desliga cada detecção |
+| `--no-rolls` | Não cria atalhos de rolagem do CoC7 |
+| `--no-links` | Não cria links para seções citadas |
 | `--keep-headers` | Mantém cabeçalhos, rodapés e números de página |
 | `--password` | Senha de PDF protegido |
 
