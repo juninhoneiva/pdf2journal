@@ -349,7 +349,8 @@ class Extractor:
         return (margin_only and in_margin) or abs(yc - y) <= 0.03
 
     def _clean_blocks(self, pno) -> list[dict]:
-        """Blocos de texto sem texto girado (abas laterais) e sem cabeçalhos repetidos."""
+        """Blocos de texto sem texto girado (abas laterais), sem glifos decorativos
+        e sem cabeçalhos repetidos."""
         rect = self.doc[pno].rect
         out = []
         for b in self._text_dict(pno)["blocks"]:
@@ -357,7 +358,10 @@ class Extractor:
                 continue
             lines = []
             for ln in b["lines"]:
-                if not _horizontal(ln) or not _line_text(ln).strip():
+                if not _horizontal(ln):
+                    continue
+                ln = _without_glyphs(ln)
+                if ln is None:
                     continue
                 if self.opts.strip_headers and self._is_furniture(ln, rect, pno):
                     continue
@@ -410,62 +414,88 @@ class Extractor:
         text_items = [_Item(tuple(b["bbox"]), "text", b) for b in blocks]
 
         # Imagens
+        backgrounds = []
         if self.opts.images:
-            text_items, imgs = self._images(page, pno, prect, parea, text_items, table_rects)
+            text_items, imgs, backgrounds = self._images(page, pno, prect, parea, text_items, table_rects)
             items.extend(imgs)
 
-        # Boxes (quadros com fundo ou borda)
-        boxes = self._boxes(page, parea, text_items + items, table_rects) if self.opts.boxes else []
+        # Boxes: quadros desenhados (fundo ou moldura) e imagens de fundo com texto.
+        boxes = (self._boxes(page, parea, text_items + items, table_rects, backgrounds)
+                 if self.opts.boxes else [])
         loose = list(text_items) + items
         for r in boxes:
-            inner = [it for it in loose if _inside((it.cx, it.cy), r)]
+            inner = [it for it in loose if _belongs(it, r)]
             if not inner:
                 continue
             loose = [it for it in loose if it not in inner]
-            loose.append(_Item(r, "box", children=inner))
+            loose.append(_Item(_union_all([r] + [it.bbox for it in inner]), "box", children=inner))
 
         return self._to_blocks(reading_order(loose))
 
     def _images(self, page, pno, prect, parea, text_items, table_rects):
+        """Ilustrações da página.
+
+        Retorna ``(text_items, imagens, fundos)``: ``fundos`` são as áreas de
+        imagens que servem de fundo para texto (pergaminho de um box, por
+        exemplo), usadas depois como boxes.
+        """
         try:
             infos = page.get_image_info(hashes=True, xrefs=True)
         except Exception:  # noqa: BLE001
-            return text_items, []
+            return text_items, [], []
         infos = [i for i in infos if i.get("digest") not in self.repeated_images]
         if not infos:
-            return text_items, []
-        def text_inside(r):
+            return text_items, [], []
+
+        content = _content_rect(text_items) or prect
+
+        def inside(r):
             # Texto inteiro dentro da imagem = legenda/rótulo que já sai na arte.
             return [it for it in text_items if _overlap_area(it.bbox, r) >= 0.8 * _area(it.bbox)]
 
-        rects = []
+        def is_background(r):
+            # Parágrafos sobre a imagem: ela é fundo do texto, não ilustração.
+            over = [it for it in text_items if _overlap_area(it.bbox, r) >= 0.5 * _area(it.bbox)]
+            lens = [len(_block_text(it.payload)) for it in over]
+            return sum(lens) > 300 or any(n > 80 for n in lens)
+
+        rects, backgrounds = [], []
         for info, r in zip(infos, img.visible_rects(self.doc, pno, infos)):
             if r is None:
                 continue
             r = _clip(tuple(r), prect)
-            if r[2] - r[0] < self.opts.min_image_pt or r[3] - r[1] < self.opts.min_image_pt:
+            w, h = r[2] - r[0], r[3] - r[1]
+            if w < self.opts.min_image_pt or h < self.opts.min_image_pt:
+                if max(w, h) > 4 * max(1.0, min(w, h)):
+                    continue                # fio ou arabesco fino
                 continue
+            if max(w, h) > 6 * min(w, h):
+                continue                    # divisória / arabesco comprido
             if any(_overlap_area(r, t) > 0.5 * _area(r) for t in table_rects):
+                continue
+            if _area(r) < 0.06 * parea and _overlap_area(r, content) < 0.3 * _area(r):
+                continue                    # ornamento na margem (cantoneira, vinheta)
+            if is_background(r):
+                backgrounds.append(r)
                 continue
             if _area(r) > 0.4 * parea and img.is_flat(self.doc, pno, info.get("xref"), r):
                 continue                    # textura de fundo (papel, pergaminho)
-            if sum(len(_block_text(it.payload)) for it in text_inside(r)) > 300:
-                continue                    # arte servindo de fundo para o texto
             rects.append(r)
 
         out = []
         for i, r in enumerate(sorted(_merge_rects(rects), key=lambda r: (r[1], r[0]))):
-            inside = text_inside(r)
-            if sum(len(_block_text(it.payload)) for it in inside) > 300:
+            if is_background(r):
+                backgrounds.append(r)
                 continue
-            text_items = [it for it in text_items if it not in inside]
+            labels = inside(r)
+            text_items = [it for it in text_items if it not in labels]
             # Texto do Journal que encosta na imagem é apagado do recorte.
             erase = [tuple(ln["bbox"]) for it in text_items for ln in it.payload["lines"]
                      if _overlap_area(tuple(ln["bbox"]), r) > 0]
             name = f"{self.asset_stem}-p{pno + 1:03d}-{i + 1:02d}.{self.opts.image_format}"
             self._save_clip(pno, r, name, erase)
             out.append(_Item(r, "image", Image(name, r[2] - r[0])))
-        return text_items, out
+        return text_items, out, backgrounds
 
     def _save_clip(self, pno, rect, name, erase):
         if self.asset_dir is None:
@@ -482,8 +512,8 @@ class Extractor:
             pix.save(str(path))
         self.images_written.append(path)
 
-    def _boxes(self, page, parea, text_items, table_rects):
-        cands = []
+    def _boxes(self, page, parea, text_items, table_rects, backgrounds=()):
+        cands = [tuple(r) for r in backgrounds if _area(r) <= 0.7 * parea]
         for p in page.get_drawings():
             r = tuple(p["rect"])
             w, h = r[2] - r[0], r[3] - r[1]
@@ -491,7 +521,9 @@ class Extractor:
                 continue
             fill = p.get("fill")
             filled = fill is not None and not all(c > 0.96 for c in fill)
-            stroked = p.get("color") is not None and any(it[0] == "re" for it in p["items"])
+            # moldura: retângulo ou contorno fechado feito de várias linhas/curvas
+            stroked = p.get("color") is not None and (
+                any(it[0] in ("re", "qu") for it in p["items"]) or len(p["items"]) >= 3)
             if not (filled or stroked):
                 continue
             if any(_overlap_area(r, t) > 0.3 * _area(r) for t in table_rects):
@@ -505,7 +537,7 @@ class Extractor:
         total = len(text_items)
         out = []
         for r in cands:
-            n = sum(1 for it in text_items if _inside((it.cx, it.cy), r))
+            n = sum(1 for it in text_items if _belongs(it, r))
             if n == 0:
                 continue
             if total > 3 and n >= 0.9 * total:   # moldura da página inteira
@@ -563,7 +595,6 @@ class Extractor:
             return []
         bx0 = min(l.bbox[0] for l in lines)
         bx1 = max(l.bbox[2] for l in lines)
-        width = max(1.0, bx1 - bx0)
         # Bloco de ficha: várias linhas "Rótulo: valor" -> uma linha por parágrafo.
         labels = sum(1 for l in lines if LABEL_RE.match(l.text.strip()))
         sheet = labels >= 2 and labels >= 0.4 * len(lines)
@@ -596,9 +627,8 @@ class Extractor:
                     new = True                      # subtítulo em negrito
                 elif LABEL_RE.match(stripped) and LABEL_RE.match(prev.text.strip()):
                     new = True                      # "Rótulo: valor" em sequência
-                elif starts_upper and (
-                        (prev_text.endswith(SENTENCE_END) and prev.bbox[2] < bx1 - 3 * size)
-                        or prev.bbox[2] < bx0 + 0.6 * width):
+                elif (starts_upper and prev_text.endswith(SENTENCE_END)
+                      and prev.bbox[2] < bx1 - 3 * size):
                     new = True                      # linha curta encerrando parágrafo
             if new:
                 if kind == "p" and marker:
@@ -635,6 +665,58 @@ class Extractor:
 # --------------------------------------------------------------------------- #
 # Funções auxiliares
 # --------------------------------------------------------------------------- #
+# Fontes de ornamentos e símbolos (Wingdings, Zapf Dingbats, fleurons...).
+SYMBOL_FONT_RE = re.compile(
+    r"dingbat|wingding|webding|zapf|^symbol|[-+]symbol|ornament|fleur|glyph|icon|awesome|"
+    r"marlett|bullets|decor|border|frame", re.I)
+
+
+def _is_decor_char(ch: str) -> bool:
+    """Caractere de enfeite: ornamentos, símbolos, uso privado, glifo não mapeado."""
+    o = ord(ch)
+    return (0x2600 <= o <= 0x27BF or 0x2B00 <= o <= 0x2BFF or 0x25A0 <= o <= 0x25FF
+            or 0x1F300 <= o <= 0x1FAFF or 0xE000 <= o <= 0xF8FF or 0xF0000 <= o
+            or o == 0xFFFD or ch in "⁂※❧☙⸙⁕⁜")
+
+
+def _without_glyphs(ln):
+    """Tira da linha os glifos decorativos; ``None`` se não sobrar texto.
+
+    Um marcador de lista no começo da linha (•, ●, ▪) é mantido como "•".
+    """
+    spans = []
+    changed = False
+    for i, s in enumerate(ln["spans"]):
+        text = s["text"]
+        symbol_font = bool(SYMBOL_FONT_RE.search(s.get("font", "")))
+        if symbol_font or any(_is_decor_char(c) for c in text):
+            rest = "".join(c for c in text if not _is_decor_char(c)) if not symbol_font else ""
+            lead = text.lstrip()
+            # marcador de lista no começo da linha: vira "•"
+            if i == 0 and len(lead.strip()) == 1 and len(ln["spans"]) > 1:
+                rest = "• "
+            elif (i == 0 and not symbol_font and len(lead) > 2 and _is_decor_char(lead[0])
+                  and lead[1] == " " and rest.strip()):
+                rest = "• " + rest.lstrip()
+            changed = True
+            if not rest.strip():
+                continue
+            s = {**s, "text": rest}
+        spans.append(s)
+    text = "".join(s["text"] for s in spans)
+    if not text.strip():
+        return None
+    # linha só de enfeite tipográfico ("* * *", "~ ~", "• • •")
+    stripped = re.sub(r"\s", "", text)
+    if re.fullmatch(r"[*~•·°=_]+", stripped) and (len(stripped) >= 2 or stripped == "•"):
+        return None
+    if not changed:
+        return ln
+    bbox = (min(s["bbox"][0] for s in spans), min(s["bbox"][1] for s in spans),
+            max(s["bbox"][2] for s in spans), max(s["bbox"][3] for s in spans))
+    return {**ln, "spans": spans, "bbox": bbox}
+
+
 def _round(size):
     return round(size * 2) / 2
 
@@ -709,6 +791,25 @@ def _exact_key(text):
 
 def _is_page_number(text):
     return bool(re.fullmatch(r"[\s\-–—]*(\d{1,4}|[ivxlcdm]{1,6})[\s\-–—]*", text.strip(), re.I))
+
+
+def _belongs(it, box, tol=3.0):
+    """O item está dentro do box (centro dentro, com folga, ou maior parte sobreposta)."""
+    return (_inside((it.cx, it.cy), box, tol)
+            or _overlap_area(it.bbox, box) >= 0.6 * max(1.0, _area(it.bbox)))
+
+
+def _union_all(rects):
+    out = rects[0]
+    for r in rects[1:]:
+        out = _union(out, r)
+    return out
+
+
+def _content_rect(items):
+    """Área ocupada pelo texto da página (ignora o que está fora: margens)."""
+    texts = [it.bbox for it in items if it.kind == "text"]
+    return _union_all(texts) if texts else None
 
 
 def _clip(r, page):

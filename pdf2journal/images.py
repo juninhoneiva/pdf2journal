@@ -58,49 +58,66 @@ def visible_rects(doc, pno, infos) -> list[tuple | None]:
 
     ``infos`` vem de ``page.get_image_info(xrefs=True)``. Imagens embutidas
     no conteúdo (xref 0) mantêm a caixa informada.
+
+    As imagens grandes (fundos, molduras) são analisadas uma a uma; as
+    pequenas, todas juntas com as grandes no lugar. Assim um fundo de página
+    não faz as ilustrações sobre ele parecerem ocupar a página inteira.
     """
     page = doc[pno]
     names = {}
     for item in page.get_images(full=True):
         names.setdefault(item[0], item[7])
-    wanted = {names[i["xref"]] for i in infos if i.get("xref") in names}
-    if not wanted:
-        return [tuple(i["bbox"]) for i in infos]
+    out: list = [tuple(i["bbox"]) for i in infos]
+    known = [k for k, i in enumerate(infos) if i.get("xref") in names]
+    if not known:
+        return out
+    parea = max(1.0, page.rect.width * page.rect.height)
 
-    z = PROBE_DPI / 72
+    def area(r):
+        return max(0.0, r[2] - r[0]) * max(0.0, r[3] - r[1])
+
+    big = [k for k in known if area(infos[k]["bbox"]) > 0.3 * parea]
+    small = [k for k in known if k not in big]
+    groups = [[k] for k in big] + ([small] if small else [])
     try:
         with_imgs = _pil(page.get_pixmap(dpi=PROBE_DPI, alpha=False))
-        stripped, removed = _without_images(doc, pno, wanted)
-        without = _pil(stripped[0].get_pixmap(dpi=PROBE_DPI, alpha=False))
     except Exception:  # noqa: BLE001 - PDF estranho: usa a caixa informada
-        return [tuple(i["bbox"]) for i in infos]
-    if with_imgs.size != without.size:
-        return [tuple(i["bbox"]) for i in infos]
-    mask = ImageChops.difference(with_imgs, without).convert("L").point(lambda v: 255 if v > 10 else 0)
-
-    out = []
-    ox, oy = page.rect.x0, page.rect.y0
-    for info in infos:
-        r = info["bbox"]
-        if names.get(info.get("xref")) not in removed:
-            out.append(tuple(r))            # não deu para isolar: usa a caixa informada
+        return out
+    for group in groups:
+        wanted = {names[infos[k]["xref"]] for k in group}
+        # Mesma imagem desenhada também fora do grupo: não dá para separar.
+        if any(names[infos[k]["xref"]] in wanted for k in known if k not in group):
             continue
-        box = (max(0, int((r[0] - ox) * z)), max(0, int((r[1] - oy) * z)),
-               min(mask.width, math.ceil((r[2] - ox) * z)), min(mask.height, math.ceil((r[3] - oy) * z)))
-        if box[2] <= box[0] or box[3] <= box[1]:
-            out.append(None)
+        try:
+            stripped, removed = _without_images(doc, pno, wanted)
+            without = _pil(stripped[0].get_pixmap(dpi=PROBE_DPI, alpha=False))
+        except Exception:  # noqa: BLE001
             continue
-        bb = mask.crop(box).getbbox()
-        if not bb:
-            out.append(None)
+        if with_imgs.size != without.size:
             continue
-        out.append((
-            max(r[0], ox + (box[0] + bb[0]) / z - 1),
-            max(r[1], oy + (box[1] + bb[1]) / z - 1),
-            min(r[2], ox + (box[0] + bb[2]) / z + 1),
-            min(r[3], oy + (box[1] + bb[3]) / z + 1),
-        ))
+        mask = ImageChops.difference(with_imgs, without).convert("L").point(lambda v: 255 if v > 10 else 0)
+        for k in group:
+            if names[infos[k]["xref"]] in removed:
+                out[k] = _visible(mask, infos[k]["bbox"], page.rect)
     return out
+
+
+def _visible(mask, r, prect):
+    z = PROBE_DPI / 72
+    ox, oy = prect.x0, prect.y0
+    box = (max(0, int((r[0] - ox) * z)), max(0, int((r[1] - oy) * z)),
+           min(mask.width, math.ceil((r[2] - ox) * z)), min(mask.height, math.ceil((r[3] - oy) * z)))
+    if box[2] <= box[0] or box[3] <= box[1]:
+        return None
+    bb = mask.crop(box).getbbox()
+    if not bb:
+        return None
+    return (
+        max(r[0], ox + (box[0] + bb[0]) / z - 1),
+        max(r[1], oy + (box[1] + bb[1]) / z - 1),
+        min(r[2], ox + (box[0] + bb[2]) / z + 1),
+        min(r[3], oy + (box[1] + bb[3]) / z + 1),
+    )
 
 
 def is_flat(doc, pno, xref, rect) -> bool:

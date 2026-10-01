@@ -29,7 +29,14 @@ def tidy(blocks: list, across_pages: bool) -> list:
     page_start = False
     for b in blocks:
         if isinstance(b, Box):
-            out.append(Box(tidy(b.children, across_pages=False)))
+            prev = _last_box_before_break(out) if across_pages else None
+            first = b.children[0] if b.children else None
+            starts_with_heading = isinstance(first, Para) and first.kind.startswith("h")
+            if prev is not None and not starts_with_heading:
+                # Box que continua na página seguinte: emenda num só.
+                out[prev] = Box(tidy(out[prev].children + b.children, across_pages=False))
+            else:
+                out.append(Box(tidy(b.children, across_pages=False)))
             last_para_idx = None
             page_start = False
             continue
@@ -65,6 +72,16 @@ def tidy(blocks: list, across_pages: bool) -> list:
         out.append(b)
         last_para_idx = len(out) - 1 if b.kind in ("p", "li") else None
     return out
+
+
+def _last_box_before_break(out: list):
+    """Índice do box que fechou a página anterior, se só houver quebras depois dele."""
+    i = len(out) - 1
+    breaks = 0
+    while i >= 0 and isinstance(out[i], PageBreak):
+        breaks += 1
+        i -= 1
+    return i if breaks and i >= 0 and isinstance(out[i], Box) else None
 
 
 def _norm(text: str) -> str:

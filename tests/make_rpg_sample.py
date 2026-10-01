@@ -53,6 +53,18 @@ def illustration(w, h, color):
     return pix
 
 
+def sidebar_art(w, h):
+    """Pergaminho de box: textura em listras (não é cor lisa) e borda escura."""
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, w, h), 0)
+    pix.set_rect(pix.irect, (225, 205, 165))
+    for y in range(0, h, 6):
+        pix.set_rect(pymupdf.IRect(0, y, w, y + 3), (200, 175, 130))
+    for r in (pymupdf.IRect(0, 0, w, 4), pymupdf.IRect(0, h - 4, w, h),
+              pymupdf.IRect(0, 0, 4, h), pymupdf.IRect(w - 4, 0, w, h)):
+        pix.set_rect(r, (110, 60, 30))
+    return pix
+
+
 def transparent_art(w, h):
     """PNG com transparência: só o miolo é opaco."""
     pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, w, h), 1)
@@ -139,6 +151,60 @@ def build(path: Path):
         "Para os encontros, veja Encontros no Cemitério (página 42).",
         "Uma rolagem de FOR abre a cripta.",
     ])
+
+    # ---------------- página 4: box de imagem, ornamentos ------------------ #
+    p = page_frame(doc, 4, bg)
+    # Box cujo fundo é uma imagem de pergaminho (não um retângulo desenhado)
+    p.insert_image(pymupdf.Rect(C1, 90, C1 + COLW, 330), pixmap=sidebar_art(240, 240))
+    y = lines(p, C1 + 10, 112, ["Nota sobre Carniçais"], size=12, font="hebo")
+    y = lines(p, C1 + 10, y + 2, [
+        "Carniçais raramente atacam sozinhos e",
+        "preferem cercar a presa em túneis escuros",
+        "onde a luz das lanternas não alcança.",
+    ])
+    lines(p, C1 + 10, y + 6, [
+        "Quem negociar com eles deve oferecer",
+        "carne fresca e jamais virar as costas",
+        "para o líder do bando durante a conversa.",
+    ])
+    # coluna 2: texto corrido ao lado do box
+    lines(p, C2, 100, [
+        "Enquanto isso, na coluna ao lado, a história",
+        "continua normalmente, sem se misturar com",
+        "o texto do quadro de notas.",
+    ])
+    # ornamentos tipográficos
+    p.insert_text((C2 + 90, 170), "uuu", fontname="zadb", fontsize=14)
+    text(p, C2 + 90, 190, "*  *  *", 12)
+    # divisória fina e cantoneira na margem
+    p.insert_image(pymupdf.Rect(C2, 210, C2 + 240, 216), pixmap=illustration(240, 6, (90, 60, 30)))
+    p.insert_image(pymupdf.Rect(4, 730, 54, 780), pixmap=illustration(50, 50, (90, 60, 30)))
+    # box no pé da página que continua na página seguinte
+    p.draw_rect(pymupdf.Rect(L, 620, R, 740), color=None, fill=(0.88, 0.82, 0.68))
+    lines(p, L + 10, 640, ["Regra Opcional: Fuga"], size=12, font="hebo")
+    lines(p, L + 10, 660, [
+        "Se os investigadores fugirem dos carniçais, use as regras de perseguição",
+        "e conte cada túnel como um local; os carniçais conhecem os atalhos e",
+    ])
+
+    # ---------------- página 5: continuação do box, moldura de linhas ------- #
+    p = page_frame(doc, 5, bg)
+    p.draw_rect(pymupdf.Rect(L, 60, R, 110), color=None, fill=(0.88, 0.82, 0.68))
+    lines(p, L + 10, 80, [
+        "ganham um dado de bônus em cada teste de perseguição.",
+    ])
+    shape = p.new_shape()
+    box = pymupdf.Rect(L, 140, R, 230)
+    for a, b in ((box.tl, box.tr), (box.tr, box.br), (box.br, box.bl), (box.bl, box.tl)):
+        shape.draw_line(a, b)
+    shape.finish(color=(0.45, 0.1, 0.1), width=1)
+    shape.commit()
+    lines(p, L + 10, 160, ["Dica para o Guardião"], size=12, font="hebo")
+    lines(p, L + 10, 180, [
+        "Descreva os sons nos túneis antes de mostrar os carniçais.",
+        "O medo do desconhecido assusta mais do que a criatura.",
+    ])
+    lines(p, L, 260, ["Fim do capítulo."])
 
     doc.set_metadata({"title": "Bestiário de Teste"})
     doc.save(path)

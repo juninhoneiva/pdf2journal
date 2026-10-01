@@ -27,7 +27,8 @@ def test_running_head_and_side_tab_removed(result):
     text = json.dumps(entry, ensure_ascii=False)
     assert "CAPÍTULO 3" not in text
     assert "BESTIÁRIO" not in text
-    assert [p["name"] for p in entry["pages"]] == ["Criaturas dos Mitos", "Página 2", "Página 3"]
+    assert [p["name"] for p in entry["pages"]] == [
+        "Criaturas dos Mitos", "Página 2", "Página 3", "Página 4", "Página 5"]
 
 
 def test_images_cropped_to_visible_area(result):
@@ -143,3 +144,56 @@ def test_chapter_references():
         "@UUID[.AAAAAAAAAAAAAAAA]{página 9}")
     # capítulo que não foi convertido: fica como texto
     assert apply("ver capítulo 7") == "ver capítulo 7"
+
+
+def test_glyphs_and_decorations_ignored(result):
+    entry, assets = result
+    p4 = entry["pages"][3]["text"]["content"]
+    # ornamentos de fonte Dingbats e "* * *" não viram texto
+    assert "uuu" not in p4 and "*" not in p4
+    # divisória fina e cantoneira na margem não viram imagem
+    assert not any(f.name.startswith("rpg-p004") for f in assets.iterdir())
+
+
+def test_image_box_keeps_text_together(result):
+    entry, _ = result
+    p4 = entry["pages"][3]["text"]["content"]
+    box = p4.split("</blockquote>")[0]
+    assert box.startswith("<blockquote><h3>Nota sobre Carniçais</h3>")
+    assert "preferem cercar a presa" in box and "líder do bando" in box
+    # a coluna ao lado fica fora do box
+    assert "coluna ao lado" not in box and "coluna ao lado" in p4
+
+
+def test_line_frame_is_box(result):
+    entry, _ = result
+    p5 = entry["pages"][4]["text"]["content"]
+    assert "<blockquote><h3>Dica para o Guardião</h3>" in p5
+    assert "Fim do capítulo." not in p5.split("Dica para o Guardião")[1].split("</blockquote>")[0]
+
+
+def test_box_continues_across_pages(tmp_path):
+    pdf = build(tmp_path / "rpg.pdf")
+    assert main([str(pdf), "-p", "4-5", "--split", "none", "-o", str(tmp_path / "out")]) == 0
+    html = json.loads((tmp_path / "out" / "rpg.json").read_text(encoding="utf-8"))["pages"][0]["text"]["content"]
+    assert "conhecem os atalhos e ganham um dado de bônus" in html
+    assert html.count("<blockquote>") == 3
+
+
+def test_glyph_filter_cases():
+    from pdf2journal.extract import _without_glyphs
+
+    def line(*spans):
+        return {"bbox": (0, 0, 100, 10), "spans": [
+            {"text": t, "font": f, "bbox": (i * 10, 0, i * 10 + 9, 10), "size": 10, "flags": 0}
+            for i, (t, f) in enumerate(spans)]}
+
+    def text(ln):
+        r = _without_glyphs(ln)
+        return None if r is None else "".join(s["text"] for s in r["spans"])
+
+    assert text(line(("● Primeiro item", "Helvetica"))) == "• Primeiro item"
+    assert text(line(("n", "ZapfDingbats"), (" item", "Helvetica"))).strip() == "•  item".strip()
+    assert text(line(("❦ ❦ ❦", "Helvetica"))) is None
+    assert text(line(("FOR —", "Helvetica"))) == "FOR —"          # traço de ficha fica
+    assert text(line(("Texto� com lixo", "Helvetica"))) == "Texto com lixo"
